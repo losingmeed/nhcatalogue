@@ -27,10 +27,14 @@ export default function GalleryDetail({ id }) {
   if (error) return <div className="p-6 text-sm text-rose-400">{error}</div>;
   if (!g) return <div className="p-6 text-slate-500">loading…</div>;
 
+  // previews are marked in_catalogue for the reader, but only a persisted row
+  // has user data (favorite/rating/notes) and survives a restart.
+  const isPersisted = g.persisted !== false;
+
   const addToCatalogue = async () => {
     setBusy("add");
     try {
-      const row = await api.post("/api/catalogue", { id: g.id });
+      const row = await api.post("/api/catalogue", { id: g.id, persist: true });
       setG({ ...row, pages: g.pages });
     } catch (e) {
       alert(e.message);
@@ -109,7 +113,14 @@ export default function GalleryDetail({ id }) {
           <div className="mt-4 flex flex-wrap gap-2">
             {g.in_catalogue ? (
               <>
-                <span className="btn btn-ghost cursor-default">✓ in catalogue</span>
+                <span className="btn btn-ghost cursor-default">
+                  {isPersisted ? "✓ in catalogue" : "👁 preview (not saved)"}
+                </span>
+                {!isPersisted && (
+                  <button className="btn btn-primary" disabled={busy} onClick={addToCatalogue}>
+                    {busy === "add" ? "saving…" : "💾 Save to catalogue"}
+                  </button>
+                )}
                 {g.download_status === "done" ? (
                   <span className="btn btn-ghost cursor-default">⬇ downloaded</span>
                 ) : (
@@ -134,7 +145,7 @@ export default function GalleryDetail({ id }) {
             <button className="btn btn-ghost" onClick={openFolder}>
               📂 Open folder
             </button>
-            {g.in_catalogue && (
+            {isPersisted && (
               <>
                 <button
                   className="btn btn-ghost"
@@ -174,7 +185,7 @@ export default function GalleryDetail({ id }) {
             )}
           </div>
 
-          {g.in_catalogue && g.notes !== undefined && (
+          {isPersisted && g.notes !== undefined && (
             <div className="mt-4">
               <textarea
                 className="w-full max-w-xl text-xs"

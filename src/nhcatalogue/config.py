@@ -82,6 +82,10 @@ class Settings:
     # Lazy page cache for galleries that belong to at least one collection.
     # 0 disables it. Enforced as an LRU safety net.
     page_cache_max_mb: int = 2048
+    # Temporary reader cache retention (seconds, idle time): pages for comics
+    # that are previewed but not yet in a collection/download are kept briefly
+    # and promoted to the permanent cache when the comic is saved.
+    temp_page_cache_ttl_s: float = 10.0
 
     # --- watchlists ----------------------------------------------------------------
     watchlist_interval_hours: float = 6.0
@@ -119,6 +123,8 @@ class Settings:
             errors.append("download_page_concurrency: must be between 1 and 16")
         if self.page_cache_max_mb < 0:
             errors.append("page_cache_max_mb: cannot be negative")
+        if self.temp_page_cache_ttl_s < 1:
+            errors.append("temp_page_cache_ttl_s: minimum 1 second")
         if self.watchlist_interval_hours < 1:
             errors.append("watchlist_interval_hours: minimum 1 hour")
         if self.dedup_mode not in ("skip", "symlink"):

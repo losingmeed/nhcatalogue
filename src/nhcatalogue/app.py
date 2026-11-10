@@ -32,6 +32,7 @@ class App:
         self._downloader = None
         self._syncer = None
         self._page_cache = None
+        self._temp_page_cache = None
 
     def _load_settings(self) -> None:
         stored = self.db_sync_settings()
@@ -149,6 +150,25 @@ class App:
                 self.settings.page_cache_max_mb * 1024 * 1024,
             )
         return self._page_cache
+
+    @property
+    def temp_page_cache(self):
+        """Lazy temporary reader cache (Big Pickle Phase 2).
+
+        Used when a comic is opened for reading but is not permanent (not in a
+        collection, not downloaded). Entries expire after the retention window;
+        promotion to permanent storage happens when the comic is added to a
+        collection / downloaded.
+        """
+        if self._temp_page_cache is None:
+            from .pagecache import PageCache
+
+            self._temp_page_cache = PageCache(
+                self.data_dir / "page_cache_tmp",
+                self.settings.page_cache_max_mb * 1024 * 1024,
+                ttl_seconds=self.settings.temp_page_cache_ttl_s,
+            )
+        return self._temp_page_cache
 
     def close(self) -> None:
         import asyncio

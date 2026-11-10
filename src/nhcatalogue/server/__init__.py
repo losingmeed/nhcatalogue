@@ -72,6 +72,9 @@ class LiveCache:
 
 class GalleryAddBody(BaseModel):
     id: int
+    # Big Pickle Phase 2: bare adds are ephemeral by default (no permanent
+    # metadata/tags write). Only collection-adds / downloads persist.
+    persist: bool = False
 
 
 class CollectionBody(BaseModel):
@@ -125,6 +128,10 @@ def create_app(app: App) -> FastAPI:
     detail_cache = LiveCache(maxsize=256, ttl=600)  # live Gallery objects
     reader_cache = LiveCache(maxsize=256, ttl=600)  # parsed pages/folder state
     search_cache = LiveCache(maxsize=1024, ttl=600)  # lightweight search results
+    # Big Pickle Phase 2: galleries opened/previewed in this server session but
+    # not written to the library. The UI marks them as "in catalogue" so the
+    # reader works, while the permanent library stays clean.
+    ephemeral_ids: set[int] = set()
     downloader = app.downloader
     syncer = app.syncer
 
@@ -183,6 +190,7 @@ def create_app(app: App) -> FastAPI:
             "folder_path": g.get("folder_path", ""),
             "cover_url": f"/api/cover/{g['id']}",
             "in_catalogue": True,
+            "persisted": True,
         }
         if include_raw:
             out["pages"] = [
@@ -216,6 +224,7 @@ def create_app(app: App) -> FastAPI:
             "folder_path": "",
             "cover_url": _cover_url(g),
             "in_catalogue": False,
+            "persisted": False,
             "pages": [
                 {"n": p.number, "ext": p.ext, "w": p.width, "h": p.height}
                 for p in g.pages
@@ -230,6 +239,48 @@ def create_app(app: App) -> FastAPI:
             g = await app.client.gallery(gallery_id)
             detail_cache.put(key, g)
         return g
+
+    async def _cache_cover(g: Gallery) -> None:
+        """Best-effort cover cache; metadata persistence must not fail on it."""
+        try:
+            cover = await app.client.fetch_image(app.client.cover_url(g))
+            ext = sniff_image_ext(cover)
+            path = app.covers_dir / f"{g.id}.{ext}"
+            path.write_bytes(cover)
+            await app.db.update_user_data(g.id, {"cover_path": str(path)})
+        except Exception as e:
+            log.debug("cover cache failed for %s: %s", g.id, e)
+
+    async def _promote_gallery(gallery_id: int) -> bool:
+        """Make a previewed gallery permanent (Big Pickle Phase 2).
+
+        Persists metadata/tags (fetching them live only when the gallery has no
+        row yet), caches the cover, and moves retained temporary reader pages
+        into the permanent page cache. Returns True when promotion happened.
+
+        Collection-adds and downloads call this; it is idempotent and safe for
+        galleries that are already permanent.
+        """
+        row = await app.db.get_gallery(gallery_id)
+        was_in_collection = await app.db.gallery_in_any_collection(gallery_id)
+        was_downloaded = bool(row and row.get("download_status") == "done")
+        if was_in_collection or was_downloaded:
+            ephemeral_ids.discard(int(gallery_id))
+            return False
+        if row is None:
+            g = await _cached_live_gallery(gallery_id)
+            await app.db.upsert_gallery(g)
+        else:
+            g = gallery_from_dict(row)
+        cover_path = (row or {}).get("cover_path") or ""
+        if not cover_path or not Path(cover_path).is_file():
+            await _cache_cover(g)
+        ephemeral_ids.discard(int(gallery_id))
+        try:
+            app.page_cache.promote_from(app.temp_page_cache, gallery_id)
+        except Exception as e:  # page cache is best-effort; metadata already saved
+            log.debug("preview page promotion failed for %s: %s", gallery_id, e)
+        return True
 
     def _reader_state(row: dict) -> dict:
         """Parsed gallery + folder/manifest state, cached per page request."""
@@ -259,8 +310,15 @@ def create_app(app: App) -> FastAPI:
     ) -> dict:
         """Live passthrough search (cached) — Browse view data source."""
         key = f"search:{q}:{page}:{sort}"
+        catalogue_ids = set(await app.db.gallery_ids())
         cached = cache.get(key)
         if cached is not None:
+            # catalogue membership changes during the cache lifetime, so
+            # recompute the cheap markers on every response.
+            for item in cached["results"]:
+                persisted = item["id"] in catalogue_ids
+                item["persisted"] = persisted
+                item["in_catalogue"] = persisted or item["id"] in ephemeral_ids
             return cached
         try:
             result = await app.client.search(q, page=page, sort=sort)
@@ -268,6 +326,7 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(502, str(e)) from e
         results = []
         for g in result.galleries:
+            persisted = g.id in catalogue_ids
             item = {
                 "id": g.id,
                 "media_id": g.media_id,
@@ -283,7 +342,8 @@ def create_app(app: App) -> FastAPI:
                     for t in g.tags
                 ],
                 "cover_url": _cover_url(g),
-                "in_catalogue": (g.id in catalogue_ids_cache),
+                "in_catalogue": persisted or g.id in ephemeral_ids,
+                "persisted": persisted,
                 # lightweight: the full page list is fetched only on add
                 "pages": [],
                 "favorite": False,
@@ -306,13 +366,11 @@ def create_app(app: App) -> FastAPI:
         cache.put(key, payload)
         return payload
 
-    catalogue_ids_cache: set[int] = set()
-
-    async def refresh_catalogue_ids() -> set[int]:
-        ids = set(await app.db.gallery_ids())
-        catalogue_ids_cache.clear()
-        catalogue_ids_cache.update(ids)
-        return ids
+    def _mark_preview(gallery_id: int, out: dict) -> dict:
+        """Apply session-preview markers to a live gallery payload."""
+        out["persisted"] = False
+        out["in_catalogue"] = int(gallery_id) in ephemeral_ids
+        return out
 
     @api.get("/api/galleries/{gallery_id}", dependencies=[GUARD])
     async def api_gallery(gallery_id: int) -> dict:
@@ -323,16 +381,16 @@ def create_app(app: App) -> FastAPI:
         # a full detail payload already fetched this session wins
         cached = detail_cache.get(f"gallery:{int(gallery_id)}")
         if cached is not None:
-            return _live_gallery_payload(cached)
+            return _mark_preview(gallery_id, _live_gallery_payload(cached))
         # otherwise reuse the lightweight search result (no extra request)
         partial = search_cache.get(f"gallery:{int(gallery_id)}")
         if partial is not None:
-            return {**partial, "partial": True}
+            return {**_mark_preview(gallery_id, {**partial}), "partial": True}
         try:
             g = await _cached_live_gallery(gallery_id)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
-        return _live_gallery_payload(g)
+        return _mark_preview(gallery_id, _live_gallery_payload(g))
 
     # -------------------------------------------------------------- catalogue
 
@@ -389,23 +447,27 @@ def create_app(app: App) -> FastAPI:
 
     @api.post("/api/catalogue", dependencies=[GUARD])
     async def api_catalogue_add(body: GalleryAddBody) -> dict:
-        """Add gallery {id} to catalogue: persist row + tags, cache cover."""
+        """Add gallery {id} to catalogue: persist row + tags, cache cover.
+
+        Big Pickle Phase 2: bare adds are ephemeral by default — no permanent
+        metadata/tags write. ``persist: true`` opts into permanent library
+        persistence (downloads and collection-adds use this).
+        """
         existing = await app.db.get_gallery(body.id)
         if existing:
+            ephemeral_ids.discard(body.id)
             return _serialize_gallery(existing, include_raw=True)
-        try:
+        if not body.persist:
             g = await _cached_live_gallery(body.id)
-        except Exception as e:
-            raise HTTPException(502, str(e)) from e
-        await app.db.upsert_gallery(g)
+            out = _live_gallery_payload(g)
+            out["in_catalogue"] = True
+            out["persisted"] = False
+            ephemeral_ids.add(int(body.id))
+            return out
         try:
-            cover = await app.client.fetch_image(app.client.cover_url(g))
-            ext = sniff_image_ext(cover)
-            path = app.covers_dir / f"{g.id}.{ext}"
-            path.write_bytes(cover)
-            await app.db.update_user_data(g.id, {"cover_path": str(path)})
+            await _promote_gallery(body.id)
         except Exception as e:
-            log.debug("cover cache failed for %s: %s", g.id, e)
+            raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
         row = await app.db.get_gallery(body.id)
         return _serialize_gallery(row, include_raw=True)
 
@@ -423,6 +485,7 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(404, "not in catalogue")
         await app.db.delete_gallery(gallery_id, delete_files=delete_files)
         app.page_cache.purge(gallery_id)
+        ephemeral_ids.discard(int(gallery_id))
         return {"deleted": gallery_id, "files_deleted": delete_files}
 
     @api.patch("/api/catalogue/{gallery_id}", dependencies=[GUARD])
@@ -440,6 +503,10 @@ def create_app(app: App) -> FastAPI:
         if patch:
             row = await app.db.update_user_data(gallery_id, patch)
         if body.collection_id is not None:
+            try:
+                await _promote_gallery(gallery_id)
+            except Exception as e:
+                raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
             await app.db.collection_add(body.collection_id, gallery_id)
             row = await app.db.get_gallery(gallery_id)
         return _serialize_gallery(row)
@@ -538,7 +605,17 @@ def create_app(app: App) -> FastAPI:
 
     @api.post("/api/collections/{collection_id}/galleries", dependencies=[GUARD])
     async def api_collection_add(collection_id: int, body: CollectionMemberBody) -> dict:
-        await app.db.collection_add(collection_id, body.gallery_id)
+        gallery_id = body.gallery_id
+        # Promotion (Big Pickle Phase 2): the comic becomes permanent storage —
+        # persist metadata/tags, cache the cover and promote retained temporary
+        # reader pages. Fail before touching the shelf if metadata is unavailable.
+        try:
+            await _promote_gallery(gallery_id)
+        except Exception as e:
+            raise HTTPException(
+                502, f"could not add #{gallery_id} to catalogue: {e.__class__.__name__}: {e}"
+            ) from e
+        await app.db.collection_add(collection_id, gallery_id)
         return {"ok": True}
 
     @api.delete("/api/collections/{collection_id}/galleries/{gallery_id}", dependencies=[GUARD])
@@ -620,14 +697,11 @@ def create_app(app: App) -> FastAPI:
 
     @api.post("/api/downloads", dependencies=[GUARD])
     async def api_download_enqueue(body: GalleryAddBody) -> dict:
-        """Queue a download (adds to catalogue first if needed)."""
-        row = await app.db.get_gallery(body.id)
-        if row is None:
-            try:
-                g = await _cached_live_gallery(body.id)
-            except Exception as e:
-                raise HTTPException(502, str(e)) from e
-            await app.db.upsert_gallery(g)
+        """Queue a download (persists metadata/tags and promotes temp pages)."""
+        try:
+            await _promote_gallery(body.id)
+        except Exception as e:
+            raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
         qid = await downloader.enqueue(body.id)
         if qid is None:
             raise HTTPException(409, "gallery not queued (missing or already active)")
@@ -637,17 +711,37 @@ def create_app(app: App) -> FastAPI:
 
     @api.get("/api/reader/{gallery_id}/page/{page_number}", dependencies=[MEDIA_GUARD])
     async def api_reader_page(gallery_id: int, page_number: int) -> Response:
-        """Library folder → collection cache → CDN (cache only for collections)."""
+        """Library folder → permanent cache → temporary reader cache → CDN.
+
+        Big Pickle Phase 2: permanent cache holds collection/downloaded pages;
+        the temporary reader cache (10s retention) holds pages for comics that
+        were opened but not yet permanently saved.
+        """
         if page_number < 1:
             raise HTTPException(400, "page numbers are 1-based")
         row = await app.db.get_gallery(gallery_id)
         if row is None:
-            raise HTTPException(404, "gallery not in catalogue")
-
-        state = _reader_state(row)
-        g: Gallery = state["gallery"]
-        pages = g.pages
-        folder: Path | None = state["folder"]
+            # Big Pickle Phase 2: comics without a permanent library entry (bare
+            # adds) resolve live and are served through the temporary reader cache.
+            try:
+                g = await _cached_live_gallery(gallery_id)
+            except Exception as e:
+                raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
+            pages = g.pages
+            folder: Path | None = None
+            complete = False
+            cache_allowed = False
+        else:
+            state = _reader_state(row)
+            g: Gallery = state["gallery"]
+            pages = g.pages
+            folder = state["folder"]
+            complete = state["complete"]
+            # permanent storage for collections / downloads, temporary reader
+            # cache for comics opened but not yet saved
+            cache_allowed = bool(await app.db.gallery_in_any_collection(gallery_id)) or (
+                row.get("download_status") == "done"
+            )
 
         # 1) downloaded library folder is authoritative — never duplicate it
         if folder:
@@ -662,14 +756,16 @@ def create_app(app: App) -> FastAPI:
                     alt = folder / f"{page_number:0{pad}d}.{ext}"
                     if alt.exists():
                         return _file_response(alt)
-                if state["complete"]:
+                if complete:
                     raise HTTPException(404, "page missing from downloaded folder")
             cache_allowed = False  # library folder is the local copy
         else:
-            # 2) lazy collection cache: only shelves get persistent pages
-            cache_allowed = await app.db.gallery_in_any_collection(gallery_id)
-            if cache_allowed and pages and page_number <= len(pages):
-                cached = app.page_cache.get(
+            # 2) lazy cache: permanent for collections / downloaded galleries,
+            #    temporary reader cache for comics opened but not yet saved
+            #    (Big Pickle Phase 2 — temporary reader-cache lifecycle).
+            if pages and page_number <= len(pages):
+                cache_store = app.page_cache if cache_allowed else app.temp_page_cache
+                cached = cache_store.get(
                     gallery_id, page_number, pages[page_number - 1].ext, len(pages)
                 )
                 if cached is not None:
@@ -681,7 +777,7 @@ def create_app(app: App) -> FastAPI:
                 g = await app.client.gallery(gallery_id)
                 pages = g.pages
                 reader_cache.put(
-                    f"reader:{gallery_id}:{row.get('folder_path') or ''}",
+                    f"reader:{gallery_id}:{str(folder) if folder is not None else ''}",
                     {"gallery": g, "folder": folder, "complete": False},
                 )
             if page_number > len(pages):
@@ -692,17 +788,22 @@ def create_app(app: App) -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(502, str(e)) from e
+            # Big Pickle Phase 3: keep the failure class visible in the message
+            # so callers/UI can map retries and surface the real cause.
+            raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
 
         ext = sniff_image_ext(data)
         if (
-            cache_allowed
-            and app.settings.page_cache_max_mb > 0
+            app.settings.page_cache_max_mb > 0
             and pages
             and page_number <= len(pages)
+            and not folder
         ):
+            # temporary (non-permanent) reader entries land in the temp cache;
+            # permanent ones (collections / downloads) land in the permanent cache
+            cache_store = app.page_cache if cache_allowed else app.temp_page_cache
             await asyncio.to_thread(
-                app.page_cache.put,
+                cache_store.put,
                 gallery_id,
                 page_number,
                 pages[page_number - 1].ext,
@@ -719,7 +820,21 @@ def create_app(app: App) -> FastAPI:
     async def api_reader_info(gallery_id: int) -> dict:
         row = await app.db.get_gallery(gallery_id)
         if row is None:
-            raise HTTPException(404, "gallery not in catalogue")
+            # Big Pickle Phase 2: uncatalogued (ephemeral) comics resolve live.
+            try:
+                g = await _cached_live_gallery(gallery_id)
+            except Exception as e:
+                raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
+            pages = g.pages
+            return {
+                "id": gallery_id,
+                "title": g.title_pretty or g.title_en or g.title_ja,
+                "num_pages": len(pages),
+                "pages": [{"n": p.number, "ext": p.ext} for p in pages],
+                "read_progress_pages": 0,
+                "downloaded": False,
+                "folder_path": "",
+            }
         state = _reader_state(row)
         g = state["gallery"]
         pages = g.pages
@@ -835,7 +950,11 @@ def create_app(app: App) -> FastAPI:
         if "download_workers" in body.patch:
             downloader.set_workers(app.settings.download_workers)
         if "page_cache_max_mb" in body.patch:
-            app.page_cache.set_max_bytes(app.settings.page_cache_max_mb * 1024 * 1024)
+            cache_bytes = app.settings.page_cache_max_mb * 1024 * 1024
+            app.page_cache.set_max_bytes(cache_bytes)
+            app.temp_page_cache.set_max_bytes(cache_bytes)
+        if "temp_page_cache_ttl_s" in body.patch:
+            app.temp_page_cache.set_ttl(app.settings.temp_page_cache_ttl_s)
         return await api_settings_get()
 
     @api.post("/api/settings/test", dependencies=[GUARD])
@@ -859,6 +978,8 @@ def create_app(app: App) -> FastAPI:
         if not path:
             path = str(app.library_root)
         ids = await import_library(app.db, Path(path), client=app.client)
+        for gid in ids:
+            ephemeral_ids.discard(int(gid))
         return {"imported": len(ids), "ids": ids}
 
     # ------------------------------------------------------------------- misc

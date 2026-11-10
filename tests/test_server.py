@@ -80,7 +80,7 @@ class TestGuard:
     def test_media_accepts_query_token(self, server):
         # <img> cannot send headers, so media routes also take ?token=
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.get(f"/api/cover/101?token={app.token}")
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("image/")
@@ -128,7 +128,7 @@ class TestSearch:
         assert transport.requests == []  # no second live detail call
 
         # adding to the catalogue is the point where full detail is fetched
-        c = tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        c = tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         assert c.status_code == 200
         assert len(c.json()["pages"]) == 4
         assert any("/api/v2/galleries/101" in u for u in transport.requests)
@@ -137,7 +137,7 @@ class TestSearch:
 class TestCatalogue:
     def test_add_and_query(self, server):
         tc, app, _ = server
-        r = tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        r = tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         assert r.status_code == 200
         body = r.json()
         assert body["id"] == 101
@@ -149,10 +149,56 @@ class TestCatalogue:
         assert r.json()["total"] == 1
         assert r.json()["items"][0]["id"] == 101
 
+    def test_bare_add_is_ephemeral(self, server):
+        # Big Pickle Phase 2: bare adds must not persist metadata — the comic
+        # stays out of the permanent library until a collection-add/download.
+        tc, app, _ = server
+        r = tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        assert r.status_code == 200
+        assert r.json()["in_catalogue"] is True  # UI-level marker only
+        assert tc.get("/api/catalogue/101", headers=H(app)).status_code == 404
+        r = tc.get("/api/catalogue", headers=H(app))
+        assert r.json()["total"] == 0
+
+    def test_persist_add_writes_catalogue(self, server):
+        tc, app, _ = server
+        r = tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        assert r.status_code == 200
+        assert tc.get("/api/catalogue/101", headers=H(app)).status_code == 200
+        assert tc.get("/api/catalogue", headers=H(app)).json()["total"] == 1
+
+    def test_bare_add_marks_session_preview(self, server):
+        # Big Pickle Phase 2: a preview is visible as in_catalogue for the whole
+        # session (search/detail/reader), but stays out of the permanent library.
+        tc, app, _ = server
+        before = tc.get("/api/search", params={"q": "mi"}, headers=H(app)).json()
+        assert before["results"][0]["in_catalogue"] is False
+        assert before["results"][0]["persisted"] is False
+
+        r = tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        assert r.json()["in_catalogue"] is True
+        assert r.json()["persisted"] is False
+
+        # the cached search payload is re-marked without a CDN round-trip
+        after = tc.get("/api/search", params={"q": "mi"}, headers=H(app)).json()
+        assert after["results"][0]["in_catalogue"] is True
+        assert after["results"][0]["persisted"] is False
+
+        detail = tc.get("/api/galleries/101", headers=H(app)).json()
+        assert detail["in_catalogue"] is True
+        assert detail["persisted"] is False
+        assert tc.get("/api/catalogue/101", headers=H(app)).status_code == 404
+
+        # persisting clears the preview marker and exposes the library row
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        detail = tc.get("/api/galleries/101", headers=H(app)).json()
+        assert detail["in_catalogue"] is True
+        assert detail["persisted"] is True
+
     def test_faceted_include_exclude(self, server):
         tc, app, _ = server
         for gid in (101, 202):
-            tc.post("/api/catalogue", json={"id": gid}, headers=H(app))
+            tc.post("/api/catalogue", json={"id": gid, "persist": True}, headers=H(app))
         # both galleries have tag 'full color' (general) + artist someartist;
         # 101 has language english, 202 also (default fixture) — use parody-free exclusion
         r = tc.get(
@@ -170,8 +216,8 @@ class TestCatalogue:
 
     def test_fts_search(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
-        tc.post("/api/catalogue", json={"id": 202}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 202, "persist": True}, headers=H(app))
         r = tc.get("/api/catalogue", params={"q": "second"}, headers=H(app))
         assert r.json()["total"] == 1
         assert r.json()["items"][0]["id"] == 202
@@ -181,7 +227,7 @@ class TestCatalogue:
 
     def test_patch_favorite_rating_and_progress(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.patch("/api/catalogue/101", json={"favorite": True, "rating": 5}, headers=H(app))
         assert r.json()["favorite"] is True
         assert r.json()["rating"] == 5
@@ -196,7 +242,7 @@ class TestCatalogue:
 
     def test_delete(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.delete("/api/catalogue/101", headers=H(app))
         assert r.status_code == 200
         assert tc.get("/api/catalogue", headers=H(app)).json()["total"] == 0
@@ -209,8 +255,8 @@ class TestCatalogue:
 class TestTags:
     def test_tag_search_with_counts(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
-        tc.post("/api/catalogue", json={"id": 202}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 202, "persist": True}, headers=H(app))
         r = tc.get("/api/tags", params={"q": "full"}, headers=H(app))
         body = r.json()
         assert body["items"]
@@ -220,7 +266,7 @@ class TestTags:
 
     def test_tag_search_type_filter(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.get("/api/tags", params={"type": "artist"}, headers=H(app))
         names = [t["name"] for t in r.json()["items"]]
         assert "someartist" in names
@@ -228,28 +274,28 @@ class TestTags:
 
     def test_tag_suggest(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.get("/api/tags/suggest", params={"q": "some"}, headers=H(app))
         items = r.json()["items"]
         assert any(i["name"] == "someartist" and i["type"] == "artist" for i in items)
 
     def test_tag_groups(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         groups = tc.get("/api/tags/groups", headers=H(app)).json()
         assert "artist" in groups and "language" in groups
         assert any(t["name"] == "someartist" for t in groups["artist"])
 
     def test_tag_facets(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         facets = tc.get("/api/tags/facets", headers=H(app)).json()
         by_type = {t["type"]: t for t in facets["types"]}
         assert by_type["artist"]["gallery_count"] == 1
 
     def test_tag_galleries(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         tag_id = tc.get("/api/tags", params={"q": "someartist"}, headers=H(app)).json()["items"][0]["id"]
         r = tc.get(f"/api/tags/{tag_id}/galleries", headers=H(app))
         assert r.json()["total"] == 1
@@ -258,7 +304,7 @@ class TestTags:
     def test_normalized_tag_matching_end_to_end(self, server):
         """'full color' vs 'full-color' both match the same tag."""
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         for spelling in ("full color", "full-color", "Full Color"):
             r = tc.get(
                 "/api/catalogue",
@@ -468,10 +514,94 @@ class TestReader:
 
     def test_cover_cached(self, server):
         tc, app, _ = server
-        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
         r = tc.get("/api/cover/101", headers=H(app))
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("image/")
+
+    def test_bare_add_reads_via_temp_cache_then_expires(self, server):
+        # Big Pickle Phase 2: bare (ephemeral) adds read through the temporary
+        # reader cache; entries expire after the 10s retention window.
+        import os as _os
+        import time as _time
+
+        tc, app, transport = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        assert r.content == b"IMG-BYTES"
+        temp = app.temp_page_cache.get(101, 2, "jpg", 4)
+        assert temp is not None
+        assert app.page_cache.get(101, 2, "jpg", 4) is None
+
+        # within retention: served from the temp cache, no CDN round-trip
+        transport.requests.clear()
+        assert tc.get("/api/reader/101/page/2", headers=H(app)).content == b"IMG-BYTES"
+        assert transport.requests == []
+
+        # retention elapsed → temp entry dropped → CDN serves the page again
+        _os.utime(temp, (_time.time() - 100, _time.time() - 100))
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is None
+        transport.requests.clear()
+        assert tc.get("/api/reader/101/page/2", headers=H(app)).content == b"IMG-BYTES"
+        assert len(transport.requests) == 1
+
+    def test_collection_add_promotes_temp_cache_to_permanent(self, server):
+        # Big Pickle Phase 2: adding a comic to a collection during the temp
+        # retention window promotes metadata + cached pages to permanent storage.
+        tc, app, transport = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))  # bare → temp
+        r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is not None
+
+        c = tc.post("/api/collections", json={"name": "Shelf"}, headers=H(app)).json()
+        tc.post(
+            f"/api/collections/{c['id']}/galleries",
+            json={"gallery_id": 101},
+            headers=H(app),
+        )
+
+        # promotion: metadata persisted + temp entries moved to permanent cache
+        prow = tc.get("/api/catalogue/101", headers=H(app))
+        assert prow.status_code == 200
+        assert any(t["name"] == "full color" for t in prow.json()["tags"])
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is None
+        assert app.page_cache.get(101, 2, "jpg", 4) is not None
+
+        # post-promotion reads are served from the permanent cache (no CDN hit)
+        transport.requests.clear()
+        r2 = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r2.content == b"IMG-BYTES"
+        assert transport.requests == []
+
+    def test_persist_add_promotes_temp_cache(self, server):
+        # Big Pickle Phase 2: explicitly saving a previewed comic promotes its
+        # retained pages to permanent storage as well.
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        assert tc.get("/api/reader/101/page/2", headers=H(app)).status_code == 200
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is not None
+
+        r = tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        assert r.status_code == 200
+        assert r.json()["persisted"] is True
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is None
+        assert app.page_cache.get(101, 2, "jpg", 4) is not None
+
+    def test_download_enqueue_promotes_temp_cache(self, server):
+        # Big Pickle Phase 2: queueing a download also makes the gallery permanent
+        # immediately, so retained preview pages move into the permanent cache.
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        assert tc.get("/api/reader/101/page/2", headers=H(app)).status_code == 200
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is not None
+
+        r = tc.post("/api/downloads", json={"id": 101}, headers=H(app))
+        assert r.status_code == 200
+        assert tc.get("/api/catalogue/101", headers=H(app)).status_code == 200
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is None
+        assert app.page_cache.get(101, 2, "jpg", 4) is not None
 
 
 class TestSettings:
@@ -515,6 +645,24 @@ class TestSettings:
         assert app.settings.download_page_concurrency == 6
         assert app.downloader.workers == 4
         assert app.page_cache.max_bytes == 512 * 1024 * 1024
+
+    def test_temp_cache_ttl_applies_live(self, server):
+        tc, app, _ = server
+        r = tc.put(
+            "/api/settings",
+            json={"patch": {"temp_page_cache_ttl_s": 42, "rate_limit_rps": 4}},
+            headers=H(app),
+        )
+        assert r.status_code == 200
+        assert app.settings.temp_page_cache_ttl_s == 42
+        assert app.temp_page_cache.ttl_seconds == 42
+        # the cache cap is shared by the permanent and preview caches
+        tc.put(
+            "/api/settings",
+            json={"patch": {"page_cache_max_mb": 128}},
+            headers=H(app),
+        )
+        assert app.temp_page_cache.max_bytes == 128 * 1024 * 1024
 
     def test_put_settings_validation(self, server):
         tc, app, _ = server

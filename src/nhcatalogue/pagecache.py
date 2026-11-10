@@ -3,6 +3,9 @@
 The cache is intentionally collection-only: Browse/search results stream and
 are discarded, downloaded galleries read from their library folder, and only
 galleries on a shelf get a persistent copy of pages they have actually opened.
+A second instance with ``ttl_seconds`` set backs the temporary reader cache:
+pages opened for previews are retained briefly and promoted into permanent
+storage when the gallery is saved.
 
 Layout: ``<root>/<gallery_id>/<page:0pad>.<ext>``. Size is capped with an LRU
 safety net (oldest mtimes are evicted first) so a big collection cannot fill
@@ -14,13 +17,15 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 
 class PageCache:
-    def __init__(self, root: str | Path, max_bytes: int = 2 * 1024**3):
+    def __init__(self, root: str | Path, max_bytes: int = 2 * 1024**3, ttl_seconds: float | None = None):
         self.root = Path(root)
         self.max_bytes = max(0, int(max_bytes))
+        self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._size: int | None = None
 
@@ -58,6 +63,12 @@ class PageCache:
         with self._lock:
             self._enforce_cap()
 
+    def set_ttl(self, ttl_seconds: float | None) -> None:
+        self.ttl_seconds = ttl_seconds
+
+    def _expired(self, mtime: float) -> bool:
+        return self.ttl_seconds is not None and (time.time() - mtime) > self.ttl_seconds
+
     # -------------------------------------------------------------------- reads
 
     def get(
@@ -68,9 +79,17 @@ class PageCache:
             return None
         candidate = self.path_for(gallery_id, page, ext, total_pages)
         try:
-            if candidate.is_file() and candidate.stat().st_size > 0:
-                os.utime(candidate, None)
-                return candidate
+            if candidate.is_file():
+                st = candidate.stat()
+                if st.st_size > 0:
+                    if self._expired(st.st_mtime):
+                        # temp retention elapsed without promotion → drop the entry
+                        candidate.unlink(missing_ok=True)
+                        if self._size is not None:
+                            self._size = max(0, self._size - st.st_size)
+                        return None
+                    os.utime(candidate, None)  # touch for LRU
+                    return candidate
         except OSError:
             return None
         # extension mismatch (imports/CDN quirks): look for the same page number
@@ -79,9 +98,16 @@ class PageCache:
         if folder.is_dir():
             for alt in folder.glob(f"{int(page):0{pad}d}.*"):
                 try:
-                    if alt.is_file() and alt.stat().st_size > 0:
-                        os.utime(alt, None)
-                        return alt
+                    st = alt.stat()
+                    if not st.st_size:
+                        continue
+                    if self._expired(st.st_mtime):
+                        alt.unlink(missing_ok=True)
+                        if self._size is not None:
+                            self._size = max(0, self._size - st.st_size)
+                        continue
+                    os.utime(alt, None)
+                    return alt
                 except OSError:
                     continue
         return None
@@ -140,6 +166,35 @@ class PageCache:
             if self._size is not None:
                 self._size = max(0, self._size - reclaimed)
         return reclaimed
+
+    def promote_from(self, source: PageCache, gallery_id: int) -> int:
+        """Move retained entries from another cache instance (e.g. the temporary
+        reader cache) into this instance's permanent storage.
+
+        Used on promotion: temporary reader entries become permanent once the
+        comic enters a collection / gets downloaded. Returns bytes moved; the
+        source gallery folder is cleared afterwards.
+        """
+        src = source._gallery_dir(int(gallery_id))
+        if not src.is_dir():
+            return 0
+        dst = self._gallery_dir(int(gallery_id))
+        moved = 0
+        with self._lock:
+            dst.mkdir(parents=True, exist_ok=True)
+            for p in sorted(src.iterdir()):
+                if not p.is_file():
+                    continue
+                target = dst / p.name
+                shutil.move(str(p), str(target))
+                moved += target.stat().st_size
+            shutil.rmtree(src, ignore_errors=True)
+        if self._size is not None:
+            self._size += moved
+        if source._size is not None:
+            source._size = max(0, source._size - moved)
+        self._enforce_cap()
+        return moved
 
     # -------------------------------------------------------------------- LRU
 

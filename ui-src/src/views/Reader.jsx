@@ -13,6 +13,28 @@ const MODES = [
   ["strip", "long strip"],
 ];
 
+// Memoized page renderer (Big Pickle Phase 3): defined at module scope so the
+// component identity is stable across renders — an inline definition remounts
+// the subtree on every render, which reset AsyncImage state and caused the
+// endless loading / reload churn.
+function PageImg({ n, compact = false, id, total, mode }) {
+  if (!(n >= 1 && n <= total)) {
+    return <div className="flex h-[60vh] w-1/2 items-center justify-center text-slate-600">—</div>;
+  }
+  return (
+    <AsyncImage
+      src={pageUrl(id, n)}
+      alt={`page ${n}`}
+      eager={mode !== "strip"}
+      loading={mode === "strip" ? "lazy" : "eager"}
+      wrapperClassName={`flex min-h-[40vh] items-center justify-center ${
+        compact ? "min-w-0 flex-1" : "w-full"
+      }`}
+      className="mx-auto max-h-[calc(100vh-120px)] w-auto max-w-full select-none object-contain"
+    />
+  );
+}
+
 export default function Reader({ id }) {
   const [info, setInfo] = useState(null);
   const [page, setPage] = useState(1);
@@ -148,23 +170,6 @@ export default function Reader({ id }) {
 
   const dir = rtl ? "rtl" : "ltr";
 
-  const PageImg = ({ n, compact = false }) =>
-    n >= 1 && n <= total ? (
-      <AsyncImage
-        key={n}
-        src={pageUrl(id, n)}
-        alt={`page ${n}`}
-        eager={mode !== "strip"}
-        loading={mode === "strip" ? "lazy" : "eager"}
-        wrapperClassName={`flex min-h-[40vh] items-center justify-center ${
-          compact ? "min-w-0 flex-1" : "w-full"
-        }`}
-        className="mx-auto max-h-[calc(100vh-120px)] w-auto max-w-full select-none object-contain"
-      />
-    ) : (
-      <div className="flex h-[60vh] w-1/2 items-center justify-center text-slate-600">—</div>
-    );
-
   return (
     <div className="relative flex h-full flex-col" ref={stripRef}>
       {/* top toolbar */}
@@ -209,7 +214,7 @@ export default function Reader({ id }) {
         <div className="flex-1 overflow-y-auto py-2" dir={dir}>
           {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
             <div key={n} data-page={n}>
-              <PageImg n={n} />
+              <PageImg n={n} id={id} total={total} mode={mode} />
             </div>
           ))}
         </div>
@@ -226,11 +231,11 @@ export default function Reader({ id }) {
         >
           {mode === "double" ? (
             <div className="flex w-full gap-1">
-              <PageImg n={page} compact />
-              <PageImg n={page + 1} compact />
+              <PageImg n={page} compact id={id} total={total} mode={mode} />
+              <PageImg n={page + 1} compact id={id} total={total} mode={mode} />
             </div>
           ) : (
-            <PageImg n={page} />
+            <PageImg n={page} id={id} total={total} mode={mode} />
           )}
         </div>
       )}

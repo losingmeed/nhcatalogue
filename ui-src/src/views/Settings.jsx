@@ -77,6 +77,7 @@ export default function SettingsView({ settings, reload }) {
         download_workers: +s.download_workers,
         download_page_concurrency: +s.download_page_concurrency,
         page_cache_max_mb: +s.page_cache_max_mb,
+        temp_page_cache_ttl_s: +s.temp_page_cache_ttl_s,
         watchlist_interval_hours: +s.watchlist_interval_hours,
         ...extra,
       };
@@ -296,6 +297,19 @@ export default function SettingsView({ settings, reload }) {
             className="w-24"
             value={s.page_cache_max_mb}
             onChange={(e) => set("page_cache_max_mb", e.target.value)}
+          />
+        </Row>
+        <Row
+          label="Preview cache (seconds)"
+          hint="how long pages for previewed comics stay cached before expiring — saving the comic (collection/download) promotes them to permanent storage."
+        >
+          <input
+            type="number"
+            min={1}
+            step={5}
+            className="w-24"
+            value={s.temp_page_cache_ttl_s}
+            onChange={(e) => set("temp_page_cache_ttl_s", e.target.value)}
           />
         </Row>
       </section>

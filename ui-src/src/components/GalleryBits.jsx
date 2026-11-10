@@ -65,7 +65,7 @@ export function GalleryCard({ gallery, actions, footer }) {
         <div className="absolute left-1 top-1 flex gap-1">
           {g.in_catalogue && (
             <span className="rounded bg-indigo-600/90 px-1.5 text-[10px] font-bold text-white">
-              CAT
+              {g.persisted === false ? "PREVIEW" : "CAT"}
             </span>
           )}
           {dlBadge && <span className="rounded bg-black/70 px-1.5 text-[10px]">{dlBadge}</span>}

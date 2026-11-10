@@ -8,10 +8,10 @@ A **local catalogue, browser and downloader for [nhentai.net](https://nhentai.ne
 
 ## What it does
 
-- **Browse** the live site through the app (full query syntax: `artist:`, `tag:`, `parody:`, `character:`, `group:`, `language:`, `category:`, `-tag` exclusions, quoted phrases), with **tag autocomplete** while you type (`artist:mi` → suggestions).
-- **Catalogue** — add galleries (metadata + cover cached locally so the grid works offline), tag them, favorite/rate/note them, organize into collections.
+- **Browse** the live site through the app (full query syntax: `artist:`, `tag:`, `parody:`, `character:`, `group:`, `language:`, `category:`, `-tag` exclusions, quoted phrases), with a **multi-select tag picker** (search/filter the list, select several tags, blacklist tags) and remembered selections.
+- **Catalogue** — preview any gallery instantly (metadata + cover streamed, pages kept in a short-lived preview cache), then save it permanently by adding it to a collection or downloading it. Saved galleries keep metadata + cover locally so the grid works offline, and can be favorited, rated, noted and organized into collections.
 - **Download** into a templated folder library — `library/<artist>/<id> - <title>/001.jpg …` + `cover.jpg` + Houdoku-compatible `metadata.json` — resumable, deduped, import-friendly.
-- **Read** — single/double-page, long-strip, RTL toggle, keyboard nav, preloading, remembers your position. Streams pages through the backend proxy or reads from disk.
+- **Read** — single/double-page, long-strip, RTL toggle, keyboard nav, preloading, remembers your position. Streams pages through the backend proxy (preview pages are cached briefly and promoted when you save) or reads from disk.
 - **Automate** — watchlists (saved searches) sync in the background, auto-add new galleries, optionally auto-download them.
 - **Beat blocks** — domain rotation + browser TLS impersonation + `cf_clearance` injection + FlareSolverr + proxy, in one strategy chain.
 
@@ -86,15 +86,23 @@ When a Cloudflare challenge is detected (403/503 + `cf-mitigated` header or chal
 ```
 ~/.local/share/nhcatalogue/          # data dir (XDG_DATA_HOME honoured)
 ├── catalogue.sqlite3                 # SQLite catalogue (WAL, FTS5, migrations)
+├── covers/                           # cover cache for offline catalogue grid
+├── page_cache/                       # permanent lazy cache for saved galleries
+├── page_cache_tmp/                   # short-lived preview reader cache
 └── library/                         # the folder library
     └── <artist>/<id> - <title>/     # folder template (configurable)
         ├── 001.jpg 002.jpg …        # zero-padded pages, original extensions
         ├── cover.jpg
         ├── metadata.json             # Houdoku-compatible (portable to other readers)
         └── .nhc.json                 # internal resume manifest (sizes, downloaded set)
-
-~/.local/share/nhcatalogue/covers/   # cover cache for offline catalogue grid
 ```
+
+**Preview vs. permanent** — browsing/previewing a gallery does not write it to
+the library. Pages you open are kept in `page_cache_tmp` for a short idle window
+(Settings → preview cache, default 10 s). Saving the gallery (Add to catalogue,
+collection add, or download) persists its metadata/tags/cover and promotes any
+retained preview pages into `page_cache`; saved galleries are then served from
+the permanent cache or their downloaded folder.
 
 **Folder template** — Settings → library. Variables: `{artist} {parody} {character} {language} {id} {title}` (multi-artist → primary artist). Default: `{artist}/{id} - {title}`. Paths are sanitized (illegal chars, reserved names, length caps).
 
@@ -103,7 +111,7 @@ When a Cloudflare challenge is detected (403/503 + `cf-mitigated` header or chal
 ## Tag search (headline feature)
 
 - Tag names are **normalized** (`full color` / `full-color` / `full_color` all match) — stored with a `name_norm` column, indexed for type-ahead.
-- **Autocomplete** in the search bar suggests catalogue tags as you type (`artist:mi` → artist matches), with local gallery counts.
+- **Tag picker** in Browse: browse/filter all catalogue tags, multi-select them (ANDed into the live query), and blacklist tags with `−`/double-click. Multi-word names are quoted automatically (`general:"full color"`), and selections/blacklists are remembered between sessions.
 - **Tags browser** view: all tags grouped by type (Artist / Parody / Character / Group / Language / Category / General) with your gallery counts, type-ahead filter, multi-select → gallery grid.
 - **Faceted filtering** in the Library: `+` include / `−` exclude pills per tag, shown as removable chips; facets reflect the current result set.
 - FTS5 over **titles + tag names** for instant local search.
@@ -112,7 +120,7 @@ When a Cloudflare challenge is detected (403/503 + `cf-mitigated` header or chal
 ## Development
 
 ```bash
-pytest            # 106 tests — all mocked, zero network calls
+pytest            # 133 tests — all mocked, zero network calls
 ruff check src tests   # if installed
 cd ui-src && npm run dev   # Vite dev server (proxies /api to :8787)
 ```
@@ -148,6 +156,7 @@ nhcatalogue/
 │   │                           # models/normalization, FlareSolverr
 │   ├── db/                     # SQLite + sequential migrations + FTS5 triggers
 │   ├── downloader/             # queue/workers, paths/template, manifests, import
+│   ├── pagecache.py            # permanent + temporary (TTL) page caches
 │   ├── sync/                   # watchlist background engine
 │   ├── server/                 # FastAPI routes + SPA hosting (token-guarded)
 │   └── ui/dist/                # built React app (served when present)
@@ -171,3 +180,9 @@ nhcatalogue/
 - **M4 — Automation** ✅ watchlist sync engine, downloads manager, settings UI, blocked banner.
 - **M5 — Desktop shell** ✅ pywebview + tray entry (browser fallback), PyInstaller spec, first-run wizard. *(Window/tray need verification on a real desktop.)*
 - **M6 — Tauri shell** — not started (optional per plan).
+
+### Big Pickle performance pass
+
+- **Phase 1 — Browse** ✅ submit-driven live search, multi-select tag picker with filter + blacklist, quoted multi-word tag tokens, remembered selections.
+- **Phase 2 — preview lifecycle** ✅ session previews (bare adds) stay out of the library; short-lived preview reader cache (configurable TTL); promotion to permanent metadata/tags/cover/page cache on save, collection add or download.
+- **Phase 3 — reader** ✅ stable memoized page renderer (no remount/reload churn), clearer upstream failure messages with retry.
