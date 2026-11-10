@@ -65,3 +65,17 @@ textarea:focus {
 .card {
   @apply rounded-lg bg-[#14171f] border border-[#222734] overflow-hidden;
 }
+
+@keyframes nhc-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, #14171f 25%, #1c2130 37%, #14171f 63%);
+  background-size: 400% 100%;
+  animation: nhc-shimmer 1.4s ease infinite;
+}

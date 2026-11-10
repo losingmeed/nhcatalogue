@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, pageUrl } from "../api.js";
+import { api, mediaUrl } from "../api.js";
 import { GalleryGrid, InfiniteScroll, TagPill } from "../components/GalleryBits.jsx";
 import TagAutocomplete from "../components/TagAutocomplete.jsx";
 
@@ -66,7 +66,7 @@ export default function Browse() {
     if (!items.length) return;
     items.slice(0, 12).forEach((g) => {
       const img = new Image();
-      img.src = pageUrl(g.id, 0).replace("/page/0", ""); // cover endpoint via card
+      img.src = mediaUrl(g.cover_url || `/api/cover/${g.id}`);
     });
   }, [items]);
 

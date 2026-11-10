@@ -1,4 +1,6 @@
 import { navigate } from "../App.jsx";
+import { mediaUrl } from "../api.js";
+import AsyncImage from "./AsyncImage.jsx";
 
 export function TagPill({ tag, onClick, prefix, onRemove, removable }) {
   const typeClass = {
@@ -53,14 +55,12 @@ export function GalleryCard({ gallery, actions, footer }) {
       onClick={() => navigate(`/gallery/${g.id}`)}
     >
       <div className="relative aspect-[5/7] w-full overflow-hidden bg-[#0f1218]">
-        <img
-          src={g.cover_url}
+        <AsyncImage
+          src={mediaUrl(g.cover_url || `/api/cover/${g.id}`)}
           alt={g.title}
-          loading="lazy"
-          className="h-full w-full object-cover transition-opacity"
-          onError={(e) => {
-            e.currentTarget.style.opacity = "0.1";
-          }}
+          eager
+          wrapperClassName="h-full w-full"
+          className="h-full w-full object-cover"
         />
         <div className="absolute left-1 top-1 flex gap-1">
           {g.in_catalogue && (

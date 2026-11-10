@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api } from "../api.js";
+import { api, mediaUrl, pageUrl } from "../api.js";
 import { TagPill } from "../components/GalleryBits.jsx";
+import AsyncImage from "../components/AsyncImage.jsx";
 import { navigate } from "../App.jsx";
 
 // Gallery detail: cover, full clickable tag list, actions —
@@ -90,10 +91,12 @@ export default function GalleryDetail({ id }) {
   return (
     <div className="p-6">
       <div className="flex flex-wrap gap-6">
-        <img
-          src={g.cover_url}
+        <AsyncImage
+          src={mediaUrl(g.cover_url || `/api/cover/${g.id}`)}
           alt={g.title}
-          className="w-56 rounded-lg border border-[#222734] object-cover"
+          eager
+          wrapperClassName="aspect-[5/7] w-56 rounded-lg border border-[#222734]"
+          className="h-full w-full object-cover"
         />
         <div className="min-w-72 flex-1">
           <h1 className="text-xl font-semibold">{g.title}</h1>
@@ -208,12 +211,13 @@ export default function GalleryDetail({ id }) {
           </div>
           <div className="flex gap-2 overflow-x-auto pb-2">
             {g.pages.slice(0, 12).map((p) => (
-              <img
+              <AsyncImage
                 key={p.n}
-                src={`/api/reader/${g.id}/page/${p.n}`}
+                src={pageUrl(g.id, p.n)}
                 alt={`page ${p.n}`}
-                loading="lazy"
-                className="h-48 rounded border border-[#222734] object-contain"
+                eager
+                wrapperClassName="h-48 min-w-32 shrink-0 cursor-pointer overflow-hidden rounded border border-[#222734] bg-[#0f1218]"
+                className="h-full w-auto object-contain"
                 onClick={() => navigate(`/reader/${g.id}?page=${p.n}`)}
               />
             ))}

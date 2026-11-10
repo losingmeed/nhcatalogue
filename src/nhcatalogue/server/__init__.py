@@ -1,15 +1,17 @@
 """FastAPI server: local REST API + SPA hosting (plan §5).
 
 Binds 127.0.0.1 on a free port; a random token header check guards every
-route (LAN exposure off by default). Only the client layer touches the
-network; page/cover routes serve from disk first, else proxy through the
-client so the strategy chain applies uniformly.
+route (LAN exposure off by default). Media routes also accept ?token= so
+plain <img> tags can load them. Only the client layer touches the network;
+page/cover routes serve from disk first, else proxy through the client so
+the strategy chain applies uniformly.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
@@ -131,10 +133,21 @@ def create_app(app: App) -> FastAPI:
     api = FastAPI(title="nhcatalogue", lifespan=lifespan, docs_url=None, redoc_url=None)
 
     def guard(x_nhc_token: Annotated[str | None, Header()] = None) -> None:
-        if x_nhc_token != app.token:
+        if not x_nhc_token or not secrets.compare_digest(x_nhc_token, app.token):
             raise HTTPException(401, "invalid or missing X-NHC-Token header")
 
     GUARD = Depends(guard)
+
+    def media_guard(
+        x_nhc_token: Annotated[str | None, Header()] = None,
+        token: Annotated[str | None, Query()] = None,
+    ) -> None:
+        """Media routes also accept ?token= because <img> cannot send headers."""
+        supplied = x_nhc_token or token
+        if not supplied or not secrets.compare_digest(supplied, app.token):
+            raise HTTPException(401, "invalid or missing token")
+
+    MEDIA_GUARD = Depends(media_guard)
 
     def _cover_url(g: Gallery) -> str:
         """Cover endpoint URL, carrying the v2 CDN path when we have one."""
@@ -552,7 +565,7 @@ def create_app(app: App) -> FastAPI:
 
     # ------------------------------------------------------------------- reader
 
-    @api.get("/api/reader/{gallery_id}/page/{page_number}", dependencies=[GUARD])
+    @api.get("/api/reader/{gallery_id}/page/{page_number}", dependencies=[MEDIA_GUARD])
     async def api_reader_page(gallery_id: int, page_number: int) -> Response:
         """Disk-first page serving; else CDN proxy through the client layer."""
         if page_number < 1:
@@ -624,7 +637,7 @@ def create_app(app: App) -> FastAPI:
 
     # -------------------------------------------------------------------- cover
 
-    @api.get("/api/cover/{gallery_id}", dependencies=[GUARD])
+    @api.get("/api/cover/{gallery_id}", dependencies=[MEDIA_GUARD])
     async def api_cover(
         gallery_id: int, media_id: str = "", ext: str = "jpg", path: str = ""
     ) -> Response:
@@ -811,8 +824,10 @@ async def run_server(app: App, host: str = "127.0.0.1", port: int = 0, *, open_b
     server = uvicorn.Server(config)
     url = f"http://{host}:{port}/"
     print(f"nhcatalogue serving on {url}  (token: {app.token})")
+    print(f"open in a browser: {url}#token={app.token}")
     if open_browser:
         import webbrowser
 
-        webbrowser.open(url)
+        # the SPA bootstraps its token from the URL hash on first load
+        webbrowser.open(f"{url}#token={app.token}")
     await server.serve()

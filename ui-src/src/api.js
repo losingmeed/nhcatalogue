@@ -66,4 +66,12 @@ export const api = {
   del: (p, params) => req("DELETE", p, undefined, params),
 };
 
-export const pageUrl = (gid, n) => `/api/reader/${gid}/page/${n}`;
+// <img> cannot send the X-NHC-Token header, so media URLs carry the token as
+// a query parameter. The server only accepts it on image routes.
+export function mediaUrl(path) {
+  if (!path) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}token=${encodeURIComponent(token)}`;
+}
+
+export const pageUrl = (gid, n) => mediaUrl(`/api/reader/${gid}/page/${n}`);

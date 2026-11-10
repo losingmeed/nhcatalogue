@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, pageUrl } from "../api.js";
 import { navigate } from "../App.jsx";
+import AsyncImage from "../components/AsyncImage.jsx";
 
 // Reader (plan §6.3): single/double page, long-strip, RTL toggle, keyboard
 // nav (←/→/space/Home/End), preload next pages, remembers position per
@@ -19,11 +20,14 @@ export default function Reader({ id }) {
   const [rtl, setRtl] = useState(() => localStorage.getItem("nhc_reader_rtl") === "1");
   const [preload, setPreload] = useState(() => +(localStorage.getItem("nhc_reader_preload") || 3));
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [showBar, setShowBar] = useState(true);
   const stripRef = useRef(null);
   const saveTimer = useRef(null);
 
   useEffect(() => {
+    setInfo(null);
+    setError("");
     api
       .get(`/api/reader/${id}/info`)
       .then((res) => {
@@ -32,7 +36,7 @@ export default function Reader({ id }) {
         setPage(startPage || Math.min(res.read_progress_pages + 1, res.num_pages) || 1);
       })
       .catch((e) => setError(e.message));
-  }, [id]);
+  }, [id, reloadKey]);
 
   // persist prefs
   useEffect(() => {
@@ -87,12 +91,14 @@ export default function Reader({ id }) {
       if (n <= total) {
         const img = new Image();
         img.src = pageUrl(id, n);
+        img.decode?.().catch(() => {});
       }
     }
     // preload the double-page partner
     if (mode === "double" && page + 1 <= total) {
       const img = new Image();
       img.src = pageUrl(id, page + 1);
+      img.decode?.().catch(() => {});
     }
   }, [page, preload, mode, total, id, info]);
 
@@ -101,20 +107,59 @@ export default function Reader({ id }) {
     if (mode !== "strip" && stripRef.current) stripRef.current.scrollTop = 0;
   }, [page, mode]);
 
-  if (error) return <div className="p-6 text-sm text-rose-400">{error}</div>;
-  if (!info) return <div className="p-6 text-slate-500">loading…</div>;
+  // track the visible strip page for progress saving (one observer per render)
+  useEffect(() => {
+    if (mode !== "strip" || !stripRef.current) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setPage(+entry.target.dataset.page);
+        }
+      },
+      { threshold: 0.4 }
+    );
+    stripRef.current.querySelectorAll("[data-page]").forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [mode, total, info]);
+
+  if (error)
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-sm text-rose-400">
+        <span>{error}</span>
+        <button className="btn btn-ghost" onClick={() => setReloadKey((k) => k + 1)}>
+          retry
+        </button>
+      </div>
+    );
+  if (!info)
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex items-center gap-3 border-b border-[#222734] bg-[#0e1118] px-4 py-2">
+          <div className="skeleton h-6 w-20 rounded" />
+          <div className="skeleton h-4 w-64 rounded" />
+          <div className="skeleton ml-auto h-4 w-16 rounded" />
+        </div>
+        <div className="flex flex-1 items-center justify-center p-4">
+          <div className="skeleton h-[70vh] w-[45vw] rounded" />
+        </div>
+      </div>
+    );
   if (!total) return <div className="p-6 text-slate-500">no pages found for #{id}</div>;
 
   const dir = rtl ? "rtl" : "ltr";
 
-  const PageImg = ({ n }) =>
+  const PageImg = ({ n, compact = false }) =>
     n >= 1 && n <= total ? (
-      <img
+      <AsyncImage
         key={n}
         src={pageUrl(id, n)}
         alt={`page ${n}`}
+        eager={mode !== "strip"}
+        loading={mode === "strip" ? "lazy" : "eager"}
+        wrapperClassName={`flex min-h-[40vh] items-center justify-center ${
+          compact ? "min-w-0 flex-1" : "w-full"
+        }`}
         className="mx-auto max-h-[calc(100vh-120px)] w-auto max-w-full select-none object-contain"
-        loading="eager"
       />
     ) : (
       <div className="flex h-[60vh] w-1/2 items-center justify-center text-slate-600">—</div>
@@ -163,19 +208,7 @@ export default function Reader({ id }) {
       {mode === "strip" ? (
         <div className="flex-1 overflow-y-auto py-2" dir={dir}>
           {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
-            <div
-              key={n}
-              data-page={n}
-              ref={(el) => {
-                // track visible page for progress saving
-                if (!el) return;
-                const io = new IntersectionObserver((entries) => {
-                  if (entries[0].isIntersecting) setPage(n);
-                }, { threshold: 0.4 });
-                io.observe(el);
-                el._io = io;
-              }}
-            >
+            <div key={n} data-page={n}>
               <PageImg n={n} />
             </div>
           ))}
@@ -192,9 +225,9 @@ export default function Reader({ id }) {
           }}
         >
           {mode === "double" ? (
-            <div className="flex gap-1">
-              <PageImg n={page} />
-              <PageImg n={page + 1} />
+            <div className="flex w-full gap-1">
+              <PageImg n={page} compact />
+              <PageImg n={page + 1} compact />
             </div>
           ) : (
             <PageImg n={page} />

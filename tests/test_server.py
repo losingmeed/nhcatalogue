@@ -77,6 +77,24 @@ class TestGuard:
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
+    def test_media_accepts_query_token(self, server):
+        # <img> cannot send headers, so media routes also take ?token=
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        r = tc.get(f"/api/cover/101?token={app.token}")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/")
+
+    def test_media_rejects_bad_query_token(self, server):
+        tc, _, _ = server
+        r = tc.get("/api/cover/101?token=wrong")
+        assert r.status_code == 401
+
+    def test_query_token_not_accepted_on_other_routes(self, server):
+        tc, app, _ = server
+        r = tc.get(f"/api/health?token={app.token}")
+        assert r.status_code == 401
+
 
 class TestSearch:
     def test_live_search_passthrough(self, server):
@@ -332,6 +350,15 @@ class TestReader:
         tc, app, _ = server
         tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
         r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        assert r.content == b"IMG-BYTES"
+        assert r.headers["content-type"].startswith("image/")
+
+    def test_page_accepts_query_token(self, server):
+        # the reader loads pages through <img src="...?token=...">
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        r = tc.get(f"/api/reader/101/page/2?token={app.token}")
         assert r.status_code == 200
         assert r.content == b"IMG-BYTES"
         assert r.headers["content-type"].startswith("image/")
