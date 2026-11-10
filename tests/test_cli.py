@@ -95,7 +95,7 @@ class TestCli:
     def test_status(self, tmp_path, mocked_client):
         rc, out = run_cli(["--data-dir", str(tmp_path), "status"])
         assert rc == 0
-        assert "nhcatalogue 0.1.0" in out
+        assert "nhcatalogue 0.2.0" in out
         assert "domains" in out
         assert "library root" in out
         assert str(tmp_path / "library") in out

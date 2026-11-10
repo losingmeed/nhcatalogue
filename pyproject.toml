@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nhcatalogue"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local catalogue / browser / downloader for nhentai with restriction handling (domain rotation, TLS impersonation, cf_clearance, FlareSolverr, proxy)."
 readme = "README.md"
 requires-python = ">=3.11"

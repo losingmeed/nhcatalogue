@@ -5,4 +5,4 @@ layer touches the network; everything else works against local SQLite and
 the folder library on disk.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
