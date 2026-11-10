@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+ui-src/node_modules/
+src/nhcatalogue/ui/dist/
+*.sqlite3
+*.db
+library/
+.DS_Store

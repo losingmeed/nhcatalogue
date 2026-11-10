@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nhcatalogue"
+version = "0.1.0"
+description = "Local catalogue / browser / downloader for nhentai with restriction handling (domain rotation, TLS impersonation, cf_clearance, FlareSolverr, proxy)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "nhcatalogue" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx[socks]>=0.27",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# curl_cffi: browser TLS impersonation. Wheels may lag behind the very newest
+# Python versions; the client degrades to httpx automatically if missing.
+tls = ["curl_cffi>=0.6"]
+desktop = ["pywebview>=5.0", "pystray>=0.19"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[project.scripts]
+nhcatalogue = "nhcatalogue.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nhcatalogue = ["db/migrations/*.sql", "ui/dist/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+# ruff: B008 (Query() in defaults) is the documented FastAPI pattern.
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]

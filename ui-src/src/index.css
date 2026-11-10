@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: #0b0d12;
+  color: #e6e9ef;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* thin dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a2f3d transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a2f3d;
+  border-radius: 8px;
+}
+
+input,
+select,
+textarea {
+  background: #14171f;
+  border: 1px solid #2a2f3d;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: inherit;
+  outline: none;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #6d7cff;
+}
+
+.btn {
+  @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors;
+}
+.btn-primary {
+  @apply bg-indigo-600 text-white hover:bg-indigo-500;
+}
+.btn-ghost {
+  @apply bg-transparent text-slate-300 hover:bg-slate-700/40;
+}
+.btn-danger {
+  @apply bg-rose-700/80 text-white hover:bg-rose-600;
+}
+.btn:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+.card {
+  @apply rounded-lg bg-[#14171f] border border-[#222734] overflow-hidden;
+}
