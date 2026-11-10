@@ -17,6 +17,7 @@ export default function Downloads() {
   const [error, setError] = useState("");
   const timer = useRef(null);
   const samples = useRef({});
+  const draggedIndex = useRef(null);
 
   const load = useCallback(async () => {
     try {
@@ -67,6 +68,53 @@ export default function Downloads() {
     load();
   };
 
+  // Persist a new queue order (gallery ids) and refresh from the server.
+  const reorder = async (nextIds) => {
+    try {
+      await api.post("/api/downloads/reorder", { order: nextIds });
+    } catch (e) {
+      alert(e.message);
+    }
+    load();
+  };
+
+  const moveUp = (index) => {
+    if (index <= 0 || !items) return;
+    const next = [...items];
+    [next[index - 1], next[index]] = [next[index], next[index - 1]];
+    setItems(next);
+    reorder(next.map((q) => q.gallery_id));
+  };
+
+  const moveDown = (index) => {
+    if (index < 0 || index >= (items?.length || 0) - 1 || !items) return;
+    const next = [...items];
+    [next[index], next[index + 1]] = [next[index + 1], next[index]];
+    setItems(next);
+    reorder(next.map((q) => q.gallery_id));
+  };
+
+  const onDragStart = (e, index) => {
+    draggedIndex.current = index;
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const onDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const onDrop = (e, targetIndex) => {
+    const sourceIndex = draggedIndex.current;
+    if (sourceIndex === null || sourceIndex === targetIndex || !items) return;
+    draggedIndex.current = null;
+    const next = [...items];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setItems(next);
+    reorder(next.map((q) => q.gallery_id));
+  };
+
   const statusColor = {
     queued: "text-slate-400",
     running: "text-sky-300",
@@ -87,8 +135,15 @@ export default function Downloads() {
         </div>
       )}
       <div className="space-y-2">
-        {items?.map((q) => (
-          <div key={q.id} className="card p-3">
+        {items?.map((q, index) => (
+          <div
+            key={q.id}
+            className="card p-3"
+            draggable={true}
+            onDragStart={(e) => onDragStart(e, index)}
+            onDragOver={onDragOver}
+            onDrop={(e) => onDrop(e, index)}
+          >
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-sm">
@@ -153,6 +208,22 @@ export default function Downloads() {
                     ↻ re-download
                   </button>
                 )}
+                <button
+                  className="btn btn-ghost text-xs"
+                  disabled={index <= 0}
+                  onClick={() => moveUp(index)}
+                  title="move up in queue"
+                >
+                  ▲
+                </button>
+                <button
+                  className="btn btn-ghost text-xs"
+                  disabled={index >= (items?.length || 0) - 1}
+                  onClick={() => moveDown(index)}
+                  title="move down in queue"
+                >
+                  ▼
+                </button>
                 <a className="btn btn-ghost text-xs" href={`#/gallery/${q.gallery_id}`}>
                   open →
                 </a>

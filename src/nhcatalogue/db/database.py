@@ -675,7 +675,8 @@ class Database:
         if row:
             return int(row["id"])
         cur = self.conn.execute(
-            "INSERT INTO download_queue(gallery_id, pages_total) VALUES (?,?)",
+            "INSERT INTO download_queue(gallery_id, pages_total, position) "
+            "VALUES (?,?,0)",
             (int(gallery_id), int(pages_total)),
         )
         return int(cur.lastrowid)
@@ -721,18 +722,33 @@ class Database:
             rows = self.conn.execute(
                 "SELECT q.*, g.title_pretty, g.title_en FROM download_queue q "
                 "JOIN galleries g ON g.id=q.gallery_id WHERE q.status=? "
-                "ORDER BY q.id DESC",
+                "ORDER BY q.position ASC, q.id ASC",
                 (status,),
             ).fetchall()
         else:
             rows = self.conn.execute(
                 "SELECT q.*, g.title_pretty, g.title_en FROM download_queue q "
-                "JOIN galleries g ON g.id=q.gallery_id ORDER BY q.id DESC"
+                "JOIN galleries g ON g.id=q.gallery_id ORDER BY q.position ASC, q.id ASC"
             ).fetchall()
         return [dict(r) for r in rows]
 
     async def queue_list(self, status: str = "") -> list[dict]:
         return await self._run(self._queue_list, status)
+
+    def _queue_reorder(self, order: list[int]) -> None:
+        """Reassign queue positions to match the given gallery id order.
+
+        Called by the frontend after drag-and-drop / up-down reordering. Does
+        not delete or modify any gallery, download file, or user metadata.
+        """
+        for position, gallery_id in enumerate(order):
+            self.conn.execute(
+                "UPDATE download_queue SET position=? WHERE gallery_id=?",
+                (int(position), int(gallery_id)),
+            )
+
+    async def queue_reorder(self, order: list[int]) -> None:
+        return await self._run(self._queue_reorder, [int(i) for i in order])
 
     def _queue_by_gallery(self, gallery_id: int) -> dict | None:
         row = self.conn.execute(

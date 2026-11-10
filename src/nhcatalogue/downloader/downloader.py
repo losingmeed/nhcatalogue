@@ -36,6 +36,7 @@ class Downloader:
         self._running = False
         self._cancel_requested: set[int] = set()  # gallery ids to cancel
         self._retry_requested: set[int] = set()
+        self._active: set[int] = set()  # gallery ids currently queued or downloading (dup prevention)
         self._paused = asyncio.Event()
         self._paused.set()  # set = not paused
         self._wakeup = asyncio.Event()
@@ -76,15 +77,24 @@ class Downloader:
             self._queue.put_nowait(None)
 
     async def enqueue(self, gallery_id: int) -> int | None:
-        """Add a gallery to the download queue (dedup: one active item each)."""
+        """Add a gallery to the download queue (dedup: one active item each).
+
+        Duplicate prevention: a gallery already queued/running is not re-queued;
+        the existing queue row is returned instead.
+        """
+        gallery_id = int(gallery_id)
         gallery = await self.db.get_gallery(gallery_id)
         if gallery is None:
             log.warning("enqueue: gallery %s not in catalogue (add it first)", gallery_id)
             return None
         qid = await self.db.queue_add(gallery_id, gallery.get("num_pages", 0) or 0)
+        if gallery_id in self._active:
+            # duplicate prevented: already queued or downloading
+            return qid
         await self.db.update_user_data(gallery_id, {"download_status": "queued"})
+        self._active.add(gallery_id)
         self.start()
-        self._queue.put_nowait(int(gallery_id))
+        self._queue.put_nowait(gallery_id)
         return qid
 
     async def enqueue_many(self, gallery_ids: list[int]) -> list[int]:
@@ -105,13 +115,16 @@ class Downloader:
         self._cancel_requested.add(int(gallery_id))
 
     async def retry(self, gallery_id: int) -> None:
+        gallery_id = int(gallery_id)
         q = await self.db.queue_by_gallery(gallery_id)
         if q:
             await self.db.queue_update(q["id"], {"status": "queued", "retries": q["retries"] + 1, "error": ""})
-            self._retry_requested.discard(int(gallery_id))
+            self._retry_requested.discard(gallery_id)
             await self.db.update_user_data(gallery_id, {"download_status": "queued"})
-            self.start()
-            self._queue.put_nowait(int(gallery_id))
+            if gallery_id not in self._active:
+                self._active.add(gallery_id)
+                self.start()
+                self._queue.put_nowait(gallery_id)
 
     # ------------------------------------------------------------------- worker
 
@@ -128,6 +141,7 @@ class Downloader:
                 except asyncio.CancelledError:
                     return
                 if item is None:
+                    self._queue.task_done()
                     return
                 try:
                     await self._paused.wait()
@@ -136,14 +150,10 @@ class Downloader:
                     return
                 except Exception as e:  # pragma: no cover - defensive
                     log.exception("worker %s failed on gallery %s", index, item)
-                    q = await self.db.queue_by_gallery(item)
-                    if q:
-                        await self.db.queue_update(
-                            q["id"], {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
-                        )
-                    await self.db.update_user_data(item, {"download_status": "error"})
                 finally:
                     self._queue.task_done()
+                    if item is not None:
+                        self._active.discard(int(item))
         finally:
             self._live_workers = max(0, self._live_workers - 1)
 
@@ -171,6 +181,51 @@ class Downloader:
                 {"status": "running", "pages_total": total, "folder_path": str(folder)},
             )
 
+        # Big Pickle Phase 4: up to 3 total attempts with 5s between failures,
+        # then mark the item failed with the reason. Manual retry (via the
+        # queue action) is kept and starts a fresh 3-attempt run.
+        max_attempts = 3
+        retry_delay = 5
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._attempt_download(
+                    gallery_id, gallery, folder, qid, total
+                )
+                return  # success
+            except _Canceled:
+                return  # _attempt_download already marked canceled/partial
+            except Exception as e:
+                last_error = e
+                log.exception("download attempt %s/%s failed for gallery %s", attempt, max_attempts, gallery_id)
+                if attempt < max_attempts:
+                    await self.db.queue_update(
+                        qid,
+                        {
+                            "retries": attempt,
+                            "error": f"attempt {attempt} failed ({e.__class__.__name__}): {e}; retrying in {retry_delay}s",
+                        },
+                    )
+                    await self.db.update_user_data(gallery_id, {"download_status": "queued"})
+                    await asyncio.sleep(retry_delay)
+                # else: fall through to final error handling below
+
+        # exhausted all attempts — mark failed with the reason
+        if qid and last_error is not None:
+            await self.db.queue_update(
+                qid,
+                {
+                    "status": "error",
+                    "retries": max_attempts - 1,
+                    "error": f"{last_error.__class__.__name__}: {last_error}",
+                },
+            )
+        await self.db.update_user_data(gallery_id, {"download_status": "error"})
+
+    async def _attempt_download(
+        self, gallery_id: int, gallery: Gallery, folder: Path, qid: int | None, total: int
+    ) -> None:
+        """Single download attempt. Raises _Canceled on cancel, Exception on failure."""
         manifest = manifests.read_manifest(folder)
         if manifest is None or manifest.get("gallery_id") != gallery.id:
             manifest = manifests.build_manifest(gallery)
@@ -287,6 +342,7 @@ class Downloader:
                 )
             await self.db.update_user_data(gallery_id, {"download_status": "partial"})
             self._cancel_requested.discard(gallery_id)
+            raise
         except Exception as e:
             cover_task.cancel()
             await asyncio.gather(cover_task, return_exceptions=True)

@@ -12,12 +12,16 @@ export default function AsyncImage({
   loading = "lazy",
   onClick,
   title,
+  autoRetry = 2, // Big Pickle Phase 3: auto-retry failed page loads (client
+                 // already retries 429/500 with backoff; this is a UI-level retry
+                 // for transient reader/CDN blips).
 }) {
   const [status, setStatus] = useState("loading");
   const [attempt, setAttempt] = useState(0);
   const [visible, setVisible] = useState(eager);
   const boxRef = useRef(null);
   const imgRef = useRef(null);
+  const retryTimer = useRef(null);
 
   useEffect(() => {
     setStatus("loading");
@@ -51,6 +55,16 @@ export default function AsyncImage({
     const img = imgRef.current;
     if (img?.complete && img.naturalWidth > 0) setStatus("loaded");
   }, [retrySrc, visible]);
+
+  // auto-retry a failed load after a short delay (bounded by autoRetry)
+  useEffect(() => {
+    if (status !== "error" || attempt >= autoRetry) return;
+    retryTimer.current = setTimeout(() => {
+      setStatus("loading");
+      setAttempt((a) => a + 1);
+    }, 1500);
+    return () => clearTimeout(retryTimer.current);
+  }, [status, attempt, autoRetry]);
 
   return (
     <div

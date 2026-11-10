@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from conftest import make_gallery_raw
+from conftest import CHALLENGE_BODY, MockTransport, make_gallery_raw
 
 from nhcatalogue.client.models import Gallery
+from nhcatalogue.client.transport import TransportResponse
 from nhcatalogue.downloader import (
     build_manifest,
     import_folder,
@@ -355,5 +356,99 @@ class TestDownloaderControl:
             found = app.downloader.existing_folder_for(55)
             assert found == folder
             assert app.downloader.existing_folder_for(9999) is None
+        finally:
+            app.close()
+
+
+class TestDownloaderRetry:
+    def _app(self, tmp_path, transport):
+        from nhcatalogue.app import App
+        from nhcatalogue.client import NhentaiClient
+
+        app = App(tmp_path / "data")
+        app.settings.library_root = str(tmp_path / "library")
+        app.settings.rate_limit_rps = 1000
+        app.settings.rate_limit_jitter = 0
+        app.settings.max_retries = 1
+        app.settings.download_workers = 4
+        app.settings.download_page_concurrency = 6
+        app._client = NhentaiClient(app.settings, transport=transport)
+        return app
+
+    def test_three_attempts_then_fail_with_reason(self, tmp_path, monkeypatch):
+        """Big Pickle Phase 4: 3 total attempts, 5s between, then failed+reason."""
+        import asyncio
+        import time
+
+        sleeps = []
+
+        async def fast_sleep(d):
+            if d == 5:  # only the downloader's inter-attempt retry delay
+                sleeps.append(d)
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+        t = MockTransport(default=TransportResponse(403, {"cf-mitigated": "challenge"}, CHALLENGE_BODY))
+
+        app = self._app(tmp_path, t)
+        g = make_gallery(1, pages=3, title="Retry Me")
+        try:
+            asyncio.run(app.db.upsert_gallery(g))
+
+            async def run():
+                await app.downloader.enqueue(1)
+                await asyncio.sleep(0.2)  # let workers pick it up
+                end = time.monotonic() + 8
+                while time.monotonic() < end:
+                    q = await app.db.queue_by_gallery(1)
+                    if q and q["status"] == "error" and q.get("retries", 0) >= 2:
+                        return q
+                    await asyncio.sleep(0.1)
+                return await app.db.queue_by_gallery(1)
+
+            q = asyncio.run(run())
+            assert q is not None, "queue row must exist"
+            assert q["status"] == "error", q
+            assert q["error"], "failure reason must be recorded"
+            # 3 total attempts → 2 retries recorded
+            assert q["retries"] == 2, q
+            # 5s delay between attempts (sleep after attempt 1 and attempt 2)
+            assert sleeps.count(5) >= 1, sleeps
+        finally:
+            app.close()
+
+    def test_duplicate_enqueue_prevented(self, tmp_path):
+        """Big Pickle Phase 4: enqueueing the same gallery twice does not duplicate the queue."""
+        import asyncio
+        import time
+
+        t = MockTransport(default=TransportResponse(200, {}, b"IMG"))
+
+        app = self._app(tmp_path, t)
+        g = make_gallery(2, pages=2, title="Dup Me")
+        try:
+            asyncio.run(app.db.upsert_gallery(g))
+
+            async def run():
+                qid1 = await app.downloader.enqueue(2)
+                qid2 = await app.downloader.enqueue(2)  # duplicate
+                assert qid1 == qid2, "duplicate enqueue must return the existing queue row"
+                items = await app.db.queue_list()
+                assert len(items) == 1, f"expected one queue entry, got {len(items)}: {items}"
+                end = time.monotonic() + 8
+                while time.monotonic() < end:
+                    row = await app.db.get_gallery(2)
+                    if row["download_status"] == "done":
+                        return
+                    await asyncio.sleep(0.1)
+
+            asyncio.run(run())
+
+            row = asyncio.run(app.db.get_gallery(2))
+            assert row["download_status"] == "done", row
+
+            folder = app.downloader.gallery_folder(g)
+            assert (folder / "001.jpg").exists()
+            assert (folder / "002.jpg").exists()
         finally:
             app.close()

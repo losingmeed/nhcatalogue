@@ -86,6 +86,10 @@ class CollectionMemberBody(BaseModel):
     gallery_id: int
 
 
+class ReorderBody(BaseModel):
+    order: list[int]
+
+
 class WatchlistBody(BaseModel):
     name: str
     query: str
@@ -756,6 +760,12 @@ def create_app(app: App) -> FastAPI:
         if qid is None:
             raise HTTPException(409, "gallery not queued (missing or already active)")
         return await app.db.queue_by_gallery(body.id)
+
+    @api.post("/api/downloads/reorder", dependencies=[GUARD])
+    async def api_download_reorder(body: ReorderBody) -> dict:
+        """Reorder the download queue (drag and drop / up / down)."""
+        await app.db.queue_reorder(body.order)
+        return {"ok": True}
 
     # ------------------------------------------------------------------- reader
 
