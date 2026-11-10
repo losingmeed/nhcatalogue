@@ -168,6 +168,51 @@ class TestManifestResume:
         finally:
             app.close()
 
+    def test_parallel_pages_rotate_cdn_hosts(self, tmp_path):
+        from conftest import MockTransport
+
+        from nhcatalogue.app import App
+        from nhcatalogue.client.transport import TransportResponse
+
+        g = make_gallery(99, pages=8, title="Parallel")
+        app = App(tmp_path / "data")
+        app.settings.library_root = str(tmp_path / "library")
+        app.settings.rate_limit_rps = 1000
+        app.settings.rate_limit_jitter = 0
+        app.settings.download_page_concurrency = 4
+        try:
+            asyncio.run(app.db.upsert_gallery(g))
+
+            hosts: list[str] = []
+            active = {"n": 0, "max": 0}
+
+            class Slow(MockTransport):
+                async def request(self, method, url, *, headers=None, cookies=None):
+                    if url.endswith(".jpg"):
+                        hosts.append(url.split("/")[2])
+                        active["n"] += 1
+                        active["max"] = max(active["max"], active["n"])
+                        await asyncio.sleep(0.02)
+                        active["n"] -= 1
+                    return TransportResponse(200, {}, b"PAGEBYTES")
+
+            from nhcatalogue.client import NhentaiClient
+
+            app._client = NhentaiClient(app.settings, transport=Slow())
+
+            async def run():
+                await app.downloader.enqueue(99)
+                await asyncio.sleep(2.0)
+
+            asyncio.run(run())
+            assert active["max"] > 1, "pages should be fetched in parallel"
+            assert len(set(hosts)) >= 2, f"pages should rotate CDN hosts: {hosts}"
+            folder = app.downloader.gallery_folder(g)
+            for n in range(1, 9):
+                assert (folder / f"{n:03d}.jpg").exists()
+        finally:
+            app.close()
+
     def test_download_writes_all_files(self, tmp_path):
         from conftest import MockTransport
 

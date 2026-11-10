@@ -113,6 +113,26 @@ class TestSearch:
         assert r.json()["num_pages"] == 4
         assert len(r.json()["pages"]) == 4
 
+    def test_search_detail_reuses_payload_then_full_on_add(self, server):
+        tc, app, transport = server
+        r = tc.get("/api/search", params={"q": "mi"}, headers=H(app))
+        assert r.status_code == 200
+        assert r.json()["results"][0]["id"] == 101
+
+        transport.requests.clear()
+        d = tc.get("/api/galleries/101", headers=H(app))
+        assert d.status_code == 200
+        body = d.json()
+        assert body["partial"] is True
+        assert body["pages"] == []
+        assert transport.requests == []  # no second live detail call
+
+        # adding to the catalogue is the point where full detail is fetched
+        c = tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        assert c.status_code == 200
+        assert len(c.json()["pages"]) == 4
+        assert any("/api/v2/galleries/101" in u for u in transport.requests)
+
 
 class TestCatalogue:
     def test_add_and_query(self, server):
@@ -363,6 +383,55 @@ class TestReader:
         assert r.content == b"IMG-BYTES"
         assert r.headers["content-type"].startswith("image/")
 
+    def test_non_collection_page_is_not_cached(self, server):
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        assert app.page_cache.get(101, 2, "jpg", 4) is None
+
+    def test_collection_page_cached_lazily(self, server):
+        tc, app, transport = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        c = tc.post("/api/collections", json={"name": "Shelf"}, headers=H(app)).json()
+        tc.post(
+            f"/api/collections/{c['id']}/galleries",
+            json={"gallery_id": 101},
+            headers=H(app),
+        )
+        r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        cached = app.page_cache.get(101, 2, "jpg", 4)
+        assert cached is not None
+        assert cached.read_bytes() == b"IMG-BYTES"
+
+        # second read is served locally (no CDN request)
+        transport.requests.clear()
+        r2 = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r2.status_code == 200
+        assert r2.content == b"IMG-BYTES"
+        assert transport.requests == []
+
+        # removing it from its last collection purges the cache immediately
+        tc.delete(
+            f"/api/collections/{c['id']}/galleries/101", headers=H(app)
+        )
+        assert app.page_cache.get(101, 2, "jpg", 4) is None
+
+    def test_deleting_collection_purges_orphaned_cache(self, server):
+        tc, app, _ = server
+        tc.post("/api/catalogue", json={"id": 101}, headers=H(app))
+        c = tc.post("/api/collections", json={"name": "Shelf"}, headers=H(app)).json()
+        tc.post(
+            f"/api/collections/{c['id']}/galleries",
+            json={"gallery_id": 101},
+            headers=H(app),
+        )
+        tc.get("/api/reader/101/page/2", headers=H(app))
+        assert app.page_cache.get(101, 2, "jpg", 4) is not None
+        tc.delete(f"/api/collections/{c['id']}", headers=H(app))
+        assert app.page_cache.get(101, 2, "jpg", 4) is None
+
     def test_page_served_from_disk_first(self, server):
         tc, app, transport = server
         tc.post("/api/catalogue", json={"id": 202}, headers=H(app))
@@ -386,6 +455,8 @@ class TestReader:
         assert r.content == b"IMG-BYTES"  # the bytes the downloader wrote to disk
         # no network hit for that page
         assert not any("/2.jpg" in u for u in transport.requests)
+        # downloaded galleries use the library folder — no duplicate page cache
+        assert app.page_cache.get(202, 2, "jpg", 2) is None
 
     def test_reader_info(self, server):
         tc, app, _ = server
@@ -423,6 +494,27 @@ class TestSettings:
         assert app.settings.domains == ["mirror.example", "nhentai.net"]
         assert app.client.rotator.order()[0] == "mirror.example"
         assert app.client.limiter.interval == 0.5
+
+    def test_fast_preset_applies_live(self, server):
+        tc, app, _ = server
+        r = tc.put(
+            "/api/settings",
+            json={
+                "patch": {
+                    "rate_limit_rps": 4,
+                    "rate_limit_jitter": 0.15,
+                    "host_concurrency": 6,
+                    "download_page_concurrency": 6,
+                    "download_workers": 4,
+                    "page_cache_max_mb": 512,
+                }
+            },
+            headers=H(app),
+        )
+        assert r.status_code == 200
+        assert app.settings.download_page_concurrency == 6
+        assert app.downloader.workers == 4
+        assert app.page_cache.max_bytes == 512 * 1024 * 1024
 
     def test_put_settings_validation(self, server):
         tc, app, _ = server

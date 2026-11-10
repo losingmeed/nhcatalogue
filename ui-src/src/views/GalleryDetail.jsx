@@ -123,12 +123,14 @@ export default function GalleryDetail({ id }) {
                 {busy === "add" ? "adding…" : "+ Add to catalogue"}
               </button>
             )}
-            <button
-              className="btn btn-primary"
-              onClick={() => navigate(`/reader/${g.id}`)}
-            >
-              ▶ Read
-            </button>
+            {g.in_catalogue && (
+              <button
+                className="btn btn-primary"
+                onClick={() => navigate(`/reader/${g.id}`)}
+              >
+                ▶ Read
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={openFolder}>
               📂 Open folder
             </button>

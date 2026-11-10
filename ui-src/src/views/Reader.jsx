@@ -18,7 +18,7 @@ export default function Reader({ id }) {
   const [page, setPage] = useState(1);
   const [mode, setMode] = useState(() => localStorage.getItem("nhc_reader_mode") || "single");
   const [rtl, setRtl] = useState(() => localStorage.getItem("nhc_reader_rtl") === "1");
-  const [preload, setPreload] = useState(() => +(localStorage.getItem("nhc_reader_preload") || 3));
+  const [preload, setPreload] = useState(() => +(localStorage.getItem("nhc_reader_preload") || 5));
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [showBar, setShowBar] = useState(true);

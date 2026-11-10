@@ -63,6 +63,9 @@ class LiveCache:
         while len(self._data) > self.maxsize:
             self._data.popitem(last=False)
 
+    def pop(self, key: str) -> None:
+        self._data.pop(key, None)
+
 
 # --------------------------------------------------------------------- models
 
@@ -119,6 +122,9 @@ class CataloguePatchBody(BaseModel):
 
 def create_app(app: App) -> FastAPI:
     cache = LiveCache()
+    detail_cache = LiveCache(maxsize=256, ttl=600)  # live Gallery objects
+    reader_cache = LiveCache(maxsize=256, ttl=600)  # parsed pages/folder state
+    search_cache = LiveCache(maxsize=1024, ttl=600)  # lightweight search results
     downloader = app.downloader
     syncer = app.syncer
 
@@ -185,6 +191,64 @@ def create_app(app: App) -> FastAPI:
             ]
         return out
 
+    def _live_gallery_payload(g: Gallery) -> dict:
+        return {
+            "id": g.id,
+            "media_id": g.media_id,
+            "title": g.title,
+            "title_en": g.title_en,
+            "title_ja": g.title_ja,
+            "title_pretty": g.title_pretty,
+            "num_pages": g.num_pages,
+            "upload_date": g.upload_date,
+            "language": g.language,
+            "category": g.category,
+            "tags": [
+                {"id": t.id, "name": t.name, "type": t.type, "count": t.count}
+                for t in g.tags
+            ],
+            "favorite": False,
+            "rating": 0,
+            "notes": "",
+            "read_progress_pages": 0,
+            "last_read_at": "",
+            "download_status": "none",
+            "folder_path": "",
+            "cover_url": _cover_url(g),
+            "in_catalogue": False,
+            "pages": [
+                {"n": p.number, "ext": p.ext, "w": p.width, "h": p.height}
+                for p in g.pages
+            ],
+        }
+
+    async def _cached_live_gallery(gallery_id: int) -> Gallery:
+        """Reuse a detail payload for the session instead of re-fetching it."""
+        key = f"gallery:{int(gallery_id)}"
+        g = detail_cache.get(key)
+        if g is None:
+            g = await app.client.gallery(gallery_id)
+            detail_cache.put(key, g)
+        return g
+
+    def _reader_state(row: dict) -> dict:
+        """Parsed gallery + folder/manifest state, cached per page request."""
+        folder_path = row.get("folder_path") or ""
+        key = f"reader:{row['id']}:{folder_path}"
+        state = reader_cache.get(key)
+        if state is not None:
+            return state
+        g = gallery_from_dict(row)
+        folder = Path(folder_path) if folder_path else None
+        manifest = read_manifest(folder) if folder else None
+        state = {
+            "gallery": g,
+            "folder": folder,
+            "complete": bool(manifest and manifest.get("complete")),
+        }
+        reader_cache.put(key, state)
+        return state
+
     # ---------------------------------------------------------------- search
 
     @api.get("/api/search", dependencies=[GUARD])
@@ -202,30 +266,42 @@ def create_app(app: App) -> FastAPI:
             result = await app.client.search(q, page=page, sort=sort)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
+        results = []
+        for g in result.galleries:
+            item = {
+                "id": g.id,
+                "media_id": g.media_id,
+                "title": g.title,
+                "title_en": g.title_en,
+                "title_ja": g.title_ja,
+                "title_pretty": g.title_pretty,
+                "num_pages": g.num_pages,
+                "upload_date": g.upload_date,
+                "language": g.language,
+                "tags": [
+                    {"id": t.id, "name": t.name, "type": t.type, "count": t.count}
+                    for t in g.tags
+                ],
+                "cover_url": _cover_url(g),
+                "in_catalogue": (g.id in catalogue_ids_cache),
+                # lightweight: the full page list is fetched only on add
+                "pages": [],
+                "favorite": False,
+                "rating": 0,
+                "notes": "",
+                "read_progress_pages": 0,
+                "last_read_at": "",
+                "download_status": "none",
+                "folder_path": "",
+            }
+            results.append(item)
+            # opening a result should not trigger a second live detail request
+            search_cache.put(f"gallery:{g.id}", item)
         payload = {
             "page": result.page,
             "total_pages": result.total_pages,
             "per_page": result.per_page,
-            "results": [
-                {
-                    "id": g.id,
-                    "media_id": g.media_id,
-                    "title": g.title,
-                    "title_en": g.title_en,
-                    "title_ja": g.title_ja,
-                    "title_pretty": g.title_pretty,
-                    "num_pages": g.num_pages,
-                    "upload_date": g.upload_date,
-                    "language": g.language,
-                    "tags": [
-                        {"id": t.id, "name": t.name, "type": t.type, "count": t.count}
-                        for t in g.tags
-                    ],
-                    "cover_url": _cover_url(g),
-                    "in_catalogue": (g.id in catalogue_ids_cache),
-                }
-                for g in result.galleries
-            ],
+            "results": results,
         }
         cache.put(key, payload)
         return payload
@@ -240,39 +316,23 @@ def create_app(app: App) -> FastAPI:
 
     @api.get("/api/galleries/{gallery_id}", dependencies=[GUARD])
     async def api_gallery(gallery_id: int) -> dict:
-        """Detail: catalogue row if present, else live API."""
+        """Detail: catalogue row → session cache → search payload → live API."""
         row = await app.db.get_gallery(gallery_id)
         if row:
             return _serialize_gallery(row, include_raw=True)
+        # a full detail payload already fetched this session wins
+        cached = detail_cache.get(f"gallery:{int(gallery_id)}")
+        if cached is not None:
+            return _live_gallery_payload(cached)
+        # otherwise reuse the lightweight search result (no extra request)
+        partial = search_cache.get(f"gallery:{int(gallery_id)}")
+        if partial is not None:
+            return {**partial, "partial": True}
         try:
-            g = await app.client.gallery(gallery_id)
+            g = await _cached_live_gallery(gallery_id)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
-        return {
-            "id": g.id,
-            "media_id": g.media_id,
-            "title": g.title,
-            "title_en": g.title_en,
-            "title_ja": g.title_ja,
-            "title_pretty": g.title_pretty,
-            "num_pages": g.num_pages,
-            "upload_date": g.upload_date,
-            "language": g.language,
-            "category": g.category,
-            "tags": [
-                {"id": t.id, "name": t.name, "type": t.type, "count": t.count} for t in g.tags
-            ],
-            "favorite": False,
-            "rating": 0,
-            "notes": "",
-            "read_progress_pages": 0,
-            "last_read_at": "",
-            "download_status": "none",
-            "folder_path": "",
-            "cover_url": _cover_url(g),
-            "in_catalogue": False,
-            "pages": [{"n": p.number, "ext": p.ext, "w": p.width, "h": p.height} for p in g.pages],
-        }
+        return _live_gallery_payload(g)
 
     # -------------------------------------------------------------- catalogue
 
@@ -334,7 +394,7 @@ def create_app(app: App) -> FastAPI:
         if existing:
             return _serialize_gallery(existing, include_raw=True)
         try:
-            g = await app.client.gallery(body.id)
+            g = await _cached_live_gallery(body.id)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
         await app.db.upsert_gallery(g)
@@ -362,6 +422,7 @@ def create_app(app: App) -> FastAPI:
         if not row:
             raise HTTPException(404, "not in catalogue")
         await app.db.delete_gallery(gallery_id, delete_files=delete_files)
+        app.page_cache.purge(gallery_id)
         return {"deleted": gallery_id, "files_deleted": delete_files}
 
     @api.patch("/api/catalogue/{gallery_id}", dependencies=[GUARD])
@@ -466,7 +527,13 @@ def create_app(app: App) -> FastAPI:
 
     @api.delete("/api/collections/{collection_id}", dependencies=[GUARD])
     async def api_collection_delete(collection_id: int) -> dict:
+        # remember members: after the delete, purge caches of galleries that no
+        # longer belong to any collection.
+        members = await app.db.collection_gallery_ids(collection_id)
         await app.db.collection_delete(collection_id)
+        for gid in members:
+            if await app.db.gallery_collection_count(gid) == 0:
+                app.page_cache.purge(gid)
         return {"deleted": collection_id}
 
     @api.post("/api/collections/{collection_id}/galleries", dependencies=[GUARD])
@@ -477,6 +544,9 @@ def create_app(app: App) -> FastAPI:
     @api.delete("/api/collections/{collection_id}/galleries/{gallery_id}", dependencies=[GUARD])
     async def api_collection_remove(collection_id: int, gallery_id: int) -> dict:
         await app.db.collection_remove(collection_id, gallery_id)
+        # collection-only cache: last shelf removal purges the gallery's pages
+        if await app.db.gallery_collection_count(gallery_id) == 0:
+            app.page_cache.purge(gallery_id)
         return {"ok": True}
 
     # --------------------------------------------------------------- watchlists
@@ -554,7 +624,7 @@ def create_app(app: App) -> FastAPI:
         row = await app.db.get_gallery(body.id)
         if row is None:
             try:
-                g = await app.client.gallery(body.id)
+                g = await _cached_live_gallery(body.id)
             except Exception as e:
                 raise HTTPException(502, str(e)) from e
             await app.db.upsert_gallery(g)
@@ -567,37 +637,55 @@ def create_app(app: App) -> FastAPI:
 
     @api.get("/api/reader/{gallery_id}/page/{page_number}", dependencies=[MEDIA_GUARD])
     async def api_reader_page(gallery_id: int, page_number: int) -> Response:
-        """Disk-first page serving; else CDN proxy through the client layer."""
+        """Library folder → collection cache → CDN (cache only for collections)."""
         if page_number < 1:
             raise HTTPException(400, "page numbers are 1-based")
         row = await app.db.get_gallery(gallery_id)
         if row is None:
             raise HTTPException(404, "gallery not in catalogue")
-        folder = row.get("folder_path") or ""
+
+        state = _reader_state(row)
+        g: Gallery = state["gallery"]
+        pages = g.pages
+        folder: Path | None = state["folder"]
+
+        # 1) downloaded library folder is authoritative — never duplicate it
         if folder:
-            manifest = read_manifest(Path(folder))
-            g = gallery_from_dict(row)
-            pages = g.pages
             if pages and page_number <= len(pages):
                 page = pages[page_number - 1]
                 pad = max(3, len(str(len(pages))))
-                candidate = Path(folder) / f"{page_number:0{pad}d}.{page.ext}"
+                candidate = folder / f"{page_number:0{pad}d}.{page.ext}"
                 if candidate.exists():
                     return _file_response(candidate)
                 # try other extensions (imports sometimes mismatch)
                 for ext in ("jpg", "png", "gif", "webp", "bmp", "jpeg"):
-                    alt = Path(folder) / f"{page_number:0{pad}d}.{ext}"
+                    alt = folder / f"{page_number:0{pad}d}.{ext}"
                     if alt.exists():
                         return _file_response(alt)
-                if manifest and manifest.get("complete"):
+                if state["complete"]:
                     raise HTTPException(404, "page missing from downloaded folder")
-        # stream from CDN through the strategy chain
+            cache_allowed = False  # library folder is the local copy
+        else:
+            # 2) lazy collection cache: only shelves get persistent pages
+            cache_allowed = await app.db.gallery_in_any_collection(gallery_id)
+            if cache_allowed and pages and page_number <= len(pages):
+                cached = app.page_cache.get(
+                    gallery_id, page_number, pages[page_number - 1].ext, len(pages)
+                )
+                if cached is not None:
+                    return _file_response(cached)
+
+        # 3) stream from the CDN through the strategy chain
         try:
-            g = gallery_from_dict(row)
-            if not g.pages:
+            if not pages:
                 g = await app.client.gallery(gallery_id)
-            if page_number > len(g.pages):
-                raise HTTPException(404, f"page {page_number} beyond {len(g.pages)}")
+                pages = g.pages
+                reader_cache.put(
+                    f"reader:{gallery_id}:{row.get('folder_path') or ''}",
+                    {"gallery": g, "folder": folder, "complete": False},
+                )
+            if page_number > len(pages):
+                raise HTTPException(404, f"page {page_number} beyond {len(pages)}")
             data = await app.client.fetch_image(
                 app.client.page_url(g, page_number)
             )
@@ -605,7 +693,22 @@ def create_app(app: App) -> FastAPI:
             raise
         except Exception as e:
             raise HTTPException(502, str(e)) from e
+
         ext = sniff_image_ext(data)
+        if (
+            cache_allowed
+            and app.settings.page_cache_max_mb > 0
+            and pages
+            and page_number <= len(pages)
+        ):
+            await asyncio.to_thread(
+                app.page_cache.put,
+                gallery_id,
+                page_number,
+                pages[page_number - 1].ext,
+                data,
+                len(pages),
+            )
         return Response(
             content=data,
             media_type=f"image/{ext}",
@@ -617,12 +720,17 @@ def create_app(app: App) -> FastAPI:
         row = await app.db.get_gallery(gallery_id)
         if row is None:
             raise HTTPException(404, "gallery not in catalogue")
-        g = gallery_from_dict(row)
+        state = _reader_state(row)
+        g = state["gallery"]
         pages = g.pages
         if not pages:
             try:
-                g = await app.client.gallery(gallery_id)
+                g = await _cached_live_gallery(gallery_id)
                 pages = g.pages
+                reader_cache.put(
+                    f"reader:{gallery_id}:{row.get('folder_path') or ''}",
+                    {"gallery": g, "folder": state["folder"], "complete": False},
+                )
             except Exception:
                 pages = []
         return {
@@ -724,6 +832,10 @@ def create_app(app: App) -> FastAPI:
             raise HTTPException(422, "; ".join(errors))
         app.save_settings()
         app.client.refresh_from_settings()
+        if "download_workers" in body.patch:
+            downloader.set_workers(app.settings.download_workers)
+        if "page_cache_max_mb" in body.patch:
+            app.page_cache.set_max_bytes(app.settings.page_cache_max_mb * 1024 * 1024)
         return await api_settings_get()
 
     @api.post("/api/settings/test", dependencies=[GUARD])

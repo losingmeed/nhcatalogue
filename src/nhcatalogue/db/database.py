@@ -594,6 +594,32 @@ class Database:
     async def collection_remove(self, collection_id: int, gallery_id: int) -> None:
         await self._run(self._collection_remove, int(collection_id), int(gallery_id))
 
+    def _gallery_collection_count(self, gallery_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT count(*) FROM collection_galleries WHERE gallery_id=?",
+            (int(gallery_id),),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def gallery_collection_count(self, gallery_id: int) -> int:
+        return await self._run(self._gallery_collection_count, int(gallery_id))
+
+    def _gallery_in_any_collection(self, gallery_id: int) -> bool:
+        return self._gallery_collection_count(gallery_id) > 0
+
+    async def gallery_in_any_collection(self, gallery_id: int) -> bool:
+        return await self._run(self._gallery_in_any_collection, int(gallery_id))
+
+    def _collection_gallery_ids(self, collection_id: int) -> list[int]:
+        rows = self.conn.execute(
+            "SELECT gallery_id FROM collection_galleries WHERE collection_id=?",
+            (int(collection_id),),
+        ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    async def collection_gallery_ids(self, collection_id: int) -> list[int]:
+        return await self._run(self._collection_gallery_ids, int(collection_id))
+
     # ---------------------------------------------------------------- watchlists
 
     def _watchlists(self) -> list[dict]:
@@ -658,7 +684,16 @@ class Database:
         return await self._run(self._queue_add, int(gallery_id), int(pages_total))
 
     def _queue_update(self, queue_id: int, patch: dict[str, Any]) -> dict | None:
-        allowed = {"status", "pages_done", "pages_total", "progress", "retries", "error", "folder_path"}
+        allowed = {
+            "status",
+            "pages_done",
+            "pages_total",
+            "progress",
+            "retries",
+            "error",
+            "folder_path",
+            "bytes_done",
+        }
         sets, vals = [], []
         for k, v in patch.items():
             if k not in allowed:

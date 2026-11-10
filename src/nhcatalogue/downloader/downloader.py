@@ -31,6 +31,8 @@ class Downloader:
         self.workers = max(1, workers or self.settings.download_workers)
         self._queue: asyncio.Queue[int | None] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
+        self._live_workers = 0
+        self._next_worker_id = 0
         self._running = False
         self._cancel_requested: set[int] = set()  # gallery ids to cancel
         self._retry_requested: set[int] = set()
@@ -45,17 +47,32 @@ class Downloader:
         if self._running:
             return
         self._running = True
-        self.workers = max(1, self.settings.download_workers)
-        for i in range(self.workers):
-            self._tasks.append(asyncio.create_task(self._worker(i), name=f"dl-worker-{i}"))
+        self.set_workers(self.settings.download_workers)
+
+    def _spawn_worker(self) -> None:
+        index = self._next_worker_id
+        self._next_worker_id += 1
+        self._live_workers += 1
+        self._tasks.append(
+            asyncio.create_task(self._worker(index), name=f"dl-worker-{index}")
+        )
+
+    def set_workers(self, n: int) -> None:
+        """Live-resize the worker pool (called after Settings is saved)."""
+        self.workers = max(1, int(n))
+        if not self._running:
+            return
+        while self._live_workers < self.workers:
+            self._spawn_worker()
 
     async def stop(self) -> None:
         self._running = False
         for t in self._tasks:
             t.cancel()
         self._tasks.clear()
+        self._live_workers = 0
         # wake anything blocked on an empty queue
-        for _ in range(self.workers):
+        for _ in range(max(1, self.workers)):
             self._queue.put_nowait(None)
 
     async def enqueue(self, gallery_id: int) -> int | None:
@@ -99,30 +116,36 @@ class Downloader:
     # ------------------------------------------------------------------- worker
 
     async def _worker(self, index: int) -> None:
-        while self._running:
-            try:
-                item = await asyncio.wait_for(self._queue.get(), timeout=2.0)
-            except TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                return
-            if item is None:
-                return
-            try:
-                await self._paused.wait()
-                await self._download_item(item)
-            except asyncio.CancelledError:
-                return
-            except Exception as e:  # pragma: no cover - defensive
-                log.exception("worker %s failed on gallery %s", index, item)
-                q = await self.db.queue_by_gallery(item)
-                if q:
-                    await self.db.queue_update(
-                        q["id"], {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
-                    )
-                await self.db.update_user_data(item, {"download_status": "error"})
-            finally:
-                self._queue.task_done()
+        try:
+            while self._running:
+                # a shrink request: let the highest-numbered workers retire
+                if self._live_workers > self.workers:
+                    return
+                try:
+                    item = await asyncio.wait_for(self._queue.get(), timeout=2.0)
+                except TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    return
+                if item is None:
+                    return
+                try:
+                    await self._paused.wait()
+                    await self._download_item(item)
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:  # pragma: no cover - defensive
+                    log.exception("worker %s failed on gallery %s", index, item)
+                    q = await self.db.queue_by_gallery(item)
+                    if q:
+                        await self.db.queue_update(
+                            q["id"], {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
+                        )
+                    await self.db.update_user_data(item, {"download_status": "error"})
+                finally:
+                    self._queue.task_done()
+        finally:
+            self._live_workers = max(0, self._live_workers - 1)
 
     async def _download_item(self, gallery_id: int) -> None:
         if gallery_id in self._cancel_requested:
@@ -143,77 +166,171 @@ class Downloader:
 
         total = len(gallery.pages)
         if qid:
-            await self.db.queue_update(qid, {"status": "running", "pages_total": total, "folder_path": str(folder)})
+            await self.db.queue_update(
+                qid,
+                {"status": "running", "pages_total": total, "folder_path": str(folder)},
+            )
 
         manifest = manifests.read_manifest(folder)
         if manifest is None or manifest.get("gallery_id") != gallery.id:
             manifest = manifests.build_manifest(gallery)
-        downloaded = manifest.get("downloaded", {})
 
-        try:
-            # cover (never blocks completion; redownloaded if missing)
-            cover_path = folder / f"cover.{gallery.cover_ext}"
-            if not cover_path.exists():
-                cover_bytes = await self.app.client.fetch_image(
-                    self.app.client.cover_url(gallery)
-                )
-                folder.mkdir(parents=True, exist_ok=True)
-                cover_path.write_bytes(cover_bytes)
-                manifests.write_metadata(folder, gallery)
+        pages_done = 0
+        bytes_done = 0
+        pages_by_number = {p.number: p for p in gallery.pages}
+        # batch disk + DB writes: every 8 pages (or once for tiny galleries)
+        flush_every = max(1, min(8, total or 1))
+        page_concurrency = max(1, int(self.settings.download_page_concurrency))
 
-            pages_done = 0
-            for page in gallery.pages:
+        cover_path = folder / f"cover.{gallery.cover_ext}"
+        cover_task = asyncio.create_task(
+            self._fetch_cover(gallery, folder, cover_path), name=f"cover-{gallery_id}"
+        )
+
+        folder.mkdir(parents=True, exist_ok=True)
+        sem = asyncio.Semaphore(page_concurrency)
+
+        async def fetch_page(page: Page) -> tuple[int, bytes, bool]:
+            async with sem:
+                await self._paused.wait()  # pause support mid-download
                 if gallery_id in self._cancel_requested:
                     raise _Canceled()
-                await self._paused.wait()  # pause support mid-download
                 if manifests.verify_page(manifest, page.number, folder, page.ext):
-                    pages_done += 1
-                    continue  # resume: already on disk and intact
-                fname = page_filename(page.number, page.ext, total)
-                dest = folder / fname
+                    return page.number, b"", False  # resume: already on disk
                 url = self.app.client.page_url(gallery, page.number)
                 data = await self.app.client.fetch_image(url)
-                folder.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                manifests.mark_page_downloaded(manifest, page.number, len(data))
-                manifests.write_manifest(folder, manifest)
-                pages_done += 1
-                if qid:
-                    await self.db.queue_update(
-                        qid,
-                        {
-                            "pages_done": pages_done,
-                            "pages_total": total,
-                            "progress": pages_done / max(1, total) * 100.0,
-                        },
+                return page.number, data, True
+
+        tasks = [asyncio.create_task(fetch_page(p)) for p in gallery.pages]
+        pending: set[asyncio.Task] = set(tasks)
+        since_flush = 0
+        try:
+            try:
+                while pending:
+                    if gallery_id in self._cancel_requested:
+                        raise _Canceled()
+                    done, pending = await asyncio.wait(
+                        pending, timeout=1.0, return_when=asyncio.FIRST_COMPLETED
                     )
+                    for task in done:
+                        number, data, fetched = task.result()
+                        page = pages_by_number.get(number)
+                        if page is None:  # pragma: no cover - defensive
+                            continue
+                        if fetched:
+                            dest = folder / page_filename(number, page.ext, total)
+                            dest.write_bytes(data)
+                            manifests.mark_page_downloaded(manifest, number, len(data))
+                            bytes_done += len(data)
+                        pages_done += 1
+                        since_flush += 1
+                    if since_flush >= flush_every:
+                        await self._flush_progress(
+                            qid, folder, manifest, pages_done, total, bytes_done
+                        )
+                        since_flush = 0
+            finally:
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            try:
+                await cover_task
+            except Exception as e:  # cover is optional — never fail the download
+                log.debug("cover failed for %s: %s", gallery_id, e)
 
             manifest["complete"] = True
-            manifest["downloaded"] = downloaded
-            manifests.write_manifest(folder, manifest)
-            manifests.write_metadata(folder, gallery)
+            await self._flush_progress(
+                qid, folder, manifest, pages_done, total, bytes_done
+            )
+            try:
+                await asyncio.to_thread(manifests.write_metadata, folder, gallery)
+            except OSError as e:  # pragma: no cover - defensive
+                log.debug("metadata write failed for %s: %s", gallery_id, e)
             if qid:
                 await self.db.queue_update(
-                    qid, {"status": "done", "progress": 100.0, "pages_done": total, "folder_path": str(folder)}
+                    qid,
+                    {
+                        "status": "done",
+                        "progress": 100.0,
+                        "pages_done": total,
+                        "bytes_done": bytes_done,
+                        "folder_path": str(folder),
+                    },
                 )
             await self.db.update_user_data(
                 gallery_id,
-                {"download_status": "done", "folder_path": str(folder), "cover_path": str(cover_path)},
+                {
+                    "download_status": "done",
+                    "folder_path": str(folder),
+                    "cover_path": str(cover_path) if cover_path.exists() else "",
+                },
             )
+            # the library folder is now authoritative; no duplicate cache
+            self.app.page_cache.purge(gallery_id)
         except _Canceled:
+            cover_task.cancel()
+            await asyncio.gather(cover_task, return_exceptions=True)
             manifest["complete"] = False
-            manifests.write_manifest(folder, manifest)
+            await self._flush_progress(
+                qid, folder, manifest, pages_done, total, bytes_done
+            )
             if qid:
-                await self.db.queue_update(qid, {"status": "canceled"})
+                await self.db.queue_update(
+                    qid,
+                    {
+                        "status": "canceled",
+                        "pages_done": pages_done,
+                        "bytes_done": bytes_done,
+                    },
+                )
             await self.db.update_user_data(gallery_id, {"download_status": "partial"})
             self._cancel_requested.discard(gallery_id)
         except Exception as e:
+            cover_task.cancel()
+            await asyncio.gather(cover_task, return_exceptions=True)
+            await self._flush_progress(
+                qid, folder, manifest, pages_done, total, bytes_done
+            )
             if qid:
                 await self.db.queue_update(
                     qid, {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
                 )
             await self.db.update_user_data(gallery_id, {"download_status": "error"})
             raise
+
+    async def _fetch_cover(self, gallery: Gallery, folder: Path, cover_path: Path) -> None:
+        if cover_path.exists():
+            return
+        data = await self.app.client.fetch_image(self.app.client.cover_url(gallery))
+        folder.mkdir(parents=True, exist_ok=True)
+        cover_path.write_bytes(data)
+        await asyncio.to_thread(manifests.write_metadata, folder, gallery)
+
+    async def _flush_progress(
+        self,
+        qid: int | None,
+        folder: Path,
+        manifest: dict,
+        pages_done: int,
+        total: int,
+        bytes_done: int,
+    ) -> None:
+        try:
+            await asyncio.to_thread(manifests.write_manifest, folder, manifest)
+        except OSError as e:  # pragma: no cover - defensive
+            log.debug("manifest write failed: %s", e)
+        if qid:
+            await self.db.queue_update(
+                qid,
+                {
+                    "pages_done": pages_done,
+                    "pages_total": total,
+                    "progress": pages_done / max(1, total) * 100.0,
+                    "bytes_done": bytes_done,
+                },
+            )
 
     # ------------------------------------------------------------------ folders
 

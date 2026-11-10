@@ -289,14 +289,24 @@ class TestNhentaiClient:
 
     async def test_image_url_builders(self):
         c = client_with(MockTransport())
-        g = Gallery.from_api(make_gallery_raw(1, media_id="999"))
+        g = Gallery.from_api(make_gallery_raw(1, media_id="999", pages=6))
+        # pages round-robin across i1–i4 so the per-host limiter isn't a bottleneck
         assert c.page_url(g, 1) == "https://i1.nhentai.net/galleries/999/1.jpg"
-        assert c.page_url(g, 2) == "https://i1.nhentai.net/galleries/999/2.jpg"
+        assert c.page_url(g, 2) == "https://i2.nhentai.net/galleries/999/2.jpg"
+        assert c.page_url(g, 4) == "https://i4.nhentai.net/galleries/999/4.jpg"
+        assert c.page_url(g, 5) == "https://i1.nhentai.net/galleries/999/5.jpg"
         assert c.cover_url(g) == "https://t1.nhentai.net/galleries/999/cover.jpg.webp"
         assert c.thumb_url(g) == "https://t1.nhentai.net/galleries/999/thumb.jpg.webp"
         # mirror hosts are in the family list
         assert c.page_url(g, 1, host=1).startswith("https://i2.nhentai.net/")
         assert c.cover_url(g, host=1).startswith("https://t2.nhentai.net/")
+
+    async def test_cover_host_rotates_by_gallery(self):
+        c = client_with(MockTransport())
+        g2 = Gallery.from_api(make_gallery_raw(2, media_id="222"))
+        g3 = Gallery.from_api(make_gallery_raw(3, media_id="333"))
+        assert c.cover_url(g2).startswith("https://t2.nhentai.net/")
+        assert c.cover_url(g3).startswith("https://t3.nhentai.net/")
 
     async def test_image_url_builders_legacy_shape(self):
         """v1-shaped raw data (no CDN paths) still reconstructs URLs."""
@@ -335,6 +345,40 @@ class TestNhentaiClient:
         c = client_with(t)
         with pytest.raises(BlockedError):
             await c.fetch_image("https://i1.nhentai.net/galleries/999/1.jpg")
+
+    async def test_fetch_image_retries_429_with_retry_after(self):
+        class Once429(MockTransport):
+            def __init__(self):
+                super().__init__()
+                self.hits = 0
+
+            async def request(self, method, url, *, headers=None, cookies=None):
+                self.hits += 1
+                self.requests.append(url)
+                if self.hits == 1:
+                    return TransportResponse(429, {"retry-after": "0"}, b"")
+                return TransportResponse(
+                    200, {"content-type": "image/jpeg"}, b"\xff\xd8\xff\xe0ok"
+                )
+
+        t = Once429()
+        c = client_with(t, max_retries=3)
+        data = await c.fetch_image("https://i1.nhentai.net/galleries/999/1.jpg")
+        assert data == b"\xff\xd8\xff\xe0ok"
+        assert t.hits == 2
+
+    async def test_fetch_image_rejects_html_and_rotates(self):
+        t = MockTransport()
+        t.routes["https://i1.nhentai.net/galleries/999/1.jpg"] = TransportResponse(
+            200, {"content-type": "text/html"}, b"<html>nope</html>"
+        )
+        t.routes["https://i2.nhentai.net/galleries/999/1.jpg"] = TransportResponse(
+            200, {"content-type": "image/jpeg"}, b"\xff\xd8\xff\xe0real"
+        )
+        c = client_with(t)
+        data = await c.fetch_image("https://i1.nhentai.net/galleries/999/1.jpg")
+        assert data == b"\xff\xd8\xff\xe0real"
+        assert any("i2.nhentai.net" in u for u in t.requests)
 
     async def test_flaresolverr_success_path(self):
         """All domains challenged on round 1 → FlareSolverr solves → round 2 works."""

@@ -14,6 +14,31 @@ function Row({ label, hint, children }) {
   );
 }
 
+// One-click speed presets. Fast is the default; Turbo is for short bursts.
+const PRESETS = {
+  polite: {
+    rate_limit_rps: 1,
+    rate_limit_jitter: 0.35,
+    host_concurrency: 3,
+    download_page_concurrency: 2,
+    download_workers: 3,
+  },
+  fast: {
+    rate_limit_rps: 4,
+    rate_limit_jitter: 0.15,
+    host_concurrency: 6,
+    download_page_concurrency: 6,
+    download_workers: 4,
+  },
+  turbo: {
+    rate_limit_rps: 10,
+    rate_limit_jitter: 0.05,
+    host_concurrency: 10,
+    download_page_concurrency: 12,
+    download_workers: 6,
+  },
+};
+
 export default function SettingsView({ settings, reload }) {
   const [s, setS] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -27,6 +52,12 @@ export default function SettingsView({ settings, reload }) {
   if (!s) return <div className="p-6 text-slate-500">loading…</div>;
 
   const set = (k, v) => setS((prev) => ({ ...prev, [k]: v }));
+
+  const activePreset =
+    Object.entries(PRESETS).find(([, preset]) =>
+      Object.entries(preset).every(([k, v]) => +s[k] === v)
+    )?.[0] || "custom";
+  const applyPreset = (name) => setS((prev) => ({ ...prev, ...PRESETS[name] }));
 
   const save = async (extra = {}) => {
     setSaving(true);
@@ -44,6 +75,8 @@ export default function SettingsView({ settings, reload }) {
         rate_limit_jitter: +s.rate_limit_jitter,
         host_concurrency: +s.host_concurrency,
         download_workers: +s.download_workers,
+        download_page_concurrency: +s.download_page_concurrency,
+        page_cache_max_mb: +s.page_cache_max_mb,
         watchlist_interval_hours: +s.watchlist_interval_hours,
         ...extra,
       };
@@ -232,7 +265,7 @@ export default function SettingsView({ settings, reload }) {
             → {s.library_root}/{s.folder_template}
           </div>
         </Row>
-        <Row label="Download workers">
+        <Row label="Download workers" hint="galleries downloaded in parallel">
           <input
             type="number"
             min={1}
@@ -242,14 +275,56 @@ export default function SettingsView({ settings, reload }) {
             onChange={(e) => set("download_workers", e.target.value)}
           />
         </Row>
+        <Row label="Page concurrency" hint="parallel page fetches inside one gallery">
+          <input
+            type="number"
+            min={1}
+            max={16}
+            className="w-20"
+            value={s.download_page_concurrency}
+            onChange={(e) => set("download_page_concurrency", e.target.value)}
+          />
+        </Row>
+        <Row
+          label="Collection cache (MB)"
+          hint="lazy page cache for galleries on a shelf — 0 disables it. Pages are cached as you read them and purged when a gallery leaves its last collection."
+        >
+          <input
+            type="number"
+            min={0}
+            step={256}
+            className="w-24"
+            value={s.page_cache_max_mb}
+            onChange={(e) => set("page_cache_max_mb", e.target.value)}
+          />
+        </Row>
       </section>
 
       {/* ---------------------------------------------------------- politeness */}
       <section className="card mb-4 p-4">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-          politeness
+          speed &amp; politeness
         </h2>
-        <Row label="Rate limit (req/sec)" hint="keep at 1 unless you know what you're doing">
+        <Row
+          label="Preset"
+          hint="Fast is the default (4 req/s per CDN host, ~16 req/s aggregate). Turbo is faster but more likely to hit 429/Cloudflare."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            {Object.keys(PRESETS).map((name) => (
+              <button
+                key={name}
+                className={`btn text-xs ${activePreset === name ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => applyPreset(name)}
+              >
+                {name}
+              </button>
+            ))}
+            <span className="text-xs text-slate-500">
+              {activePreset === "custom" ? "custom" : `active: ${activePreset}`}
+            </span>
+          </div>
+        </Row>
+        <Row label="Rate limit (req/sec)" hint="per CDN host — pages rotate across i1–i4">
           <input
             type="number"
             step="0.5"
@@ -275,7 +350,7 @@ export default function SettingsView({ settings, reload }) {
           <input
             type="number"
             min={1}
-            max={10}
+            max={16}
             className="w-20"
             value={s.host_concurrency}
             onChange={(e) => set("host_concurrency", e.target.value)}

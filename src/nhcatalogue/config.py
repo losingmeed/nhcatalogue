@@ -61,9 +61,11 @@ class Settings:
     flaresolverr_url: str = ""  # e.g. http://127.0.0.1:8191 (optional)
 
     # --- politeness --------------------------------------------------------------
-    rate_limit_rps: float = 1.0  # per-host requests per second
-    rate_limit_jitter: float = 0.35  # +- fraction of the interval
-    host_concurrency: int = 3  # per-host concurrent request cap
+    # Fast preset by default: 4 req/s per CDN host, ~16 req/s aggregate across
+    # i1–i4. Turbo (10 rps) and Polite (1 rps) are one click away in Settings.
+    rate_limit_rps: float = 4.0  # per-host requests per second
+    rate_limit_jitter: float = 0.15  # +- fraction of the interval
+    host_concurrency: int = 6  # per-host concurrent request cap
     request_timeout: float = 30.0
     max_retries: int = 3
 
@@ -71,9 +73,15 @@ class Settings:
     # "" means "auto" → <data_dir>/library (resolved by App)
     library_root: str = ""
     folder_template: str = "{artist}/{id} - {title}"
-    download_workers: int = 3
+    download_workers: int = 4
+    download_page_concurrency: int = 6  # parallel page fetches inside one gallery
     dedup_mode: str = "skip"  # skip | symlink (second artist path)
     default_language: str = ""  # e.g. "english"; empty = no filter
+
+    # --- cache -------------------------------------------------------------------
+    # Lazy page cache for galleries that belong to at least one collection.
+    # 0 disables it. Enforced as an LRU safety net.
+    page_cache_max_mb: int = 2048
 
     # --- watchlists ----------------------------------------------------------------
     watchlist_interval_hours: float = 6.0
@@ -83,7 +91,7 @@ class Settings:
     age_confirmed: bool = False
     first_run_done: bool = False
     reader_prefs: dict[str, Any] = field(
-        default_factory=lambda: {"mode": "single", "rtl": False, "preload": 3}
+        default_factory=lambda: {"mode": "single", "rtl": False, "preload": 5}
     )
 
     # ---------------------------------------------------------------------------
@@ -103,10 +111,14 @@ class Settings:
                 errors.append("proxy: must be an http://, https:// or socks5:// URL")
         if self.rate_limit_rps <= 0 or self.rate_limit_rps > 10:
             errors.append("rate_limit_rps: must be between 0 and 10 requests/sec")
-        if not 1 <= self.host_concurrency <= 10:
-            errors.append("host_concurrency: must be between 1 and 10")
+        if not 1 <= self.host_concurrency <= 16:
+            errors.append("host_concurrency: must be between 1 and 16")
         if not 1 <= self.download_workers <= 10:
             errors.append("download_workers: must be between 1 and 10")
+        if not 1 <= self.download_page_concurrency <= 16:
+            errors.append("download_page_concurrency: must be between 1 and 16")
+        if self.page_cache_max_mb < 0:
+            errors.append("page_cache_max_mb: cannot be negative")
         if self.watchlist_interval_hours < 1:
             errors.append("watchlist_interval_hours: minimum 1 hour")
         if self.dedup_mode not in ("skip", "symlink"):

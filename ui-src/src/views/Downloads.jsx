@@ -3,15 +3,50 @@ import { api } from "../api.js";
 
 // Downloads manager (plan §6.8): queue with per-item progress bars,
 // pause/resume/retry, open-folder info.
+const fmtEta = (seconds) => {
+  if (seconds == null || !isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `${Math.ceil(seconds)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+};
+const fmtRate = (n) => (n >= 100 ? String(Math.round(n)) : n.toFixed(1));
+const fmtMB = (bytesPerSecond) => (bytesPerSecond / 1048576).toFixed(1);
+
 export default function Downloads() {
   const [items, setItems] = useState(null);
+  const [speeds, setSpeeds] = useState({});
   const [error, setError] = useState("");
   const timer = useRef(null);
+  const samples = useRef({});
 
   const load = useCallback(async () => {
     try {
       const r = await api.get("/api/downloads");
-      setItems(r.items || []);
+      const next = r.items || [];
+      const now = Date.now();
+      const measured = {};
+      for (const q of next) {
+        const prev = samples.current[q.id];
+        if (prev && now > prev.t) {
+          const dt = (now - prev.t) / 1000;
+          const pps = Math.max(0, (q.pages_done - prev.pages) / dt);
+          const bps = Math.max(0, ((q.bytes_done || 0) - prev.bytes) / dt);
+          measured[q.id] = {
+            pps,
+            bps,
+            eta:
+              pps > 0 && q.pages_total > q.pages_done
+                ? (q.pages_total - q.pages_done) / pps
+                : null,
+          };
+        }
+        samples.current[q.id] = {
+          t: now,
+          pages: q.pages_done,
+          bytes: q.bytes_done || 0,
+        };
+      }
+      setItems(next);
+      setSpeeds(measured);
     } catch (e) {
       setError(e.message);
     }
@@ -19,7 +54,7 @@ export default function Downloads() {
 
   useEffect(() => {
     load();
-    timer.current = setInterval(load, 1500);
+    timer.current = setInterval(load, 1000);
     return () => clearInterval(timer.current);
   }, [load]);
 
@@ -78,6 +113,16 @@ export default function Downloads() {
                   <span>
                     {q.pages_done}/{q.pages_total} pages
                   </span>
+                  {q.status === "running" && speeds[q.id]?.pps > 0 && (
+                    <span className="text-sky-300/80">
+                      {fmtRate(speeds[q.id].pps)} pages/s
+                      {speeds[q.id].bps > 0 && ` · ${fmtMB(speeds[q.id].bps)} MB/s`}
+                      {speeds[q.id].eta && ` · ETA ${fmtEta(speeds[q.id].eta)}`}
+                    </span>
+                  )}
+                  {q.bytes_done > 0 && (
+                    <span>{(q.bytes_done / 1048576).toFixed(1)} MB</span>
+                  )}
                   {q.retries > 0 && <span>{q.retries} retries</span>}
                   {q.error && <span className="text-rose-400/80">{q.error}</span>}
                   {q.folder_path && (

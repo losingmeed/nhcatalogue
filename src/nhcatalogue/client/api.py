@@ -112,6 +112,16 @@ class NhentaiClient:
         cookies.update(self._runtime_cookies)
         return cookies
 
+    def _image_headers(self) -> dict[str, str]:
+        """Headers that match a browser loading an <img> from the CDN."""
+        headers = self._base_headers()
+        headers["Accept"] = (
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        )
+        headers["Sec-Fetch-Dest"] = "image"
+        headers["Sec-Fetch-Mode"] = "no-cors"
+        return headers
+
     @staticmethod
     def _host(url: str) -> str:
         try:
@@ -121,13 +131,18 @@ class NhentaiClient:
 
     # ------------------------------------------------------- strategy chain
 
-    async def _send(self, url: str) -> TransportResponse:
+    async def _send(
+        self, url: str, *, headers: dict[str, str] | None = None
+    ) -> TransportResponse:
         """Send a single request with rate limiting (no retries)."""
         host = self._host(url)
         await self.limiter.acquire(host)
         try:
             return await self.transport.request(
-                "GET", url, headers=self._base_headers(), cookies=self._cookies()
+                "GET",
+                url,
+                headers=headers or self._base_headers(),
+                cookies=self._cookies(),
             )
         finally:
             self.limiter.release(host)
@@ -243,33 +258,64 @@ class NhentaiClient:
 
     # ------------------------------------------------------------ image URLs
 
-    def page_url(self, gallery: Gallery, page: int, host: int = 0) -> str:
-        """Image URL builder with i1–i4 mirrors (plan §1)."""
-        h = IMAGE_HOSTS[host % len(IMAGE_HOSTS)]
+    def page_url(self, gallery: Gallery, page: int, host: int | None = None) -> str:
+        """Image URL builder with i1–i4 round-robin rotation.
+
+        The rate limiter is per-host, so spreading pages across all four CDNs
+        multiplies throughput without raising the per-host request rate. Pass
+        ``host`` explicitly to pin a specific mirror (used by tests/fallbacks).
+        """
+        h = IMAGE_HOSTS[(page - 1 if host is None else host) % len(IMAGE_HOSTS)]
         p = gallery.pages[page - 1]
         if p.path:
             return f"https://{h}/{p.path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/{page}.{p.ext}"
 
-    def cover_url(self, gallery: Gallery, host: int = 0) -> str:
-        h = THUMB_HOSTS[host % len(THUMB_HOSTS)]
+    def cover_url(self, gallery: Gallery, host: int | None = None) -> str:
+        h = THUMB_HOSTS[
+            ((gallery.id - 1) if host is None else host) % len(THUMB_HOSTS)
+        ]
         if gallery.cover_path:
             return f"https://{h}/{gallery.cover_path.lstrip('/')}"
         if gallery.thumb_path:
             return f"https://{h}/{gallery.thumb_path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/cover.{gallery.cover_ext}"
 
-    def thumb_url(self, gallery: Gallery, host: int = 0) -> str:
-        h = THUMB_HOSTS[host % len(THUMB_HOSTS)]
+    def thumb_url(self, gallery: Gallery, host: int | None = None) -> str:
+        h = THUMB_HOSTS[
+            ((gallery.id - 1) if host is None else host) % len(THUMB_HOSTS)
+        ]
         if gallery.thumb_path:
             return f"https://{h}/{gallery.thumb_path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/thumb.{gallery.thumb_ext}"
+
+    @staticmethod
+    def _valid_image_response(resp: TransportResponse) -> bool:
+        """Accept only non-empty bodies that aren't clearly HTML/JSON errors."""
+        if not resp.content:
+            return False
+        ctype = str(resp.headers.get("content-type") or "").lower()
+        if ctype and not (
+            ctype.startswith("image/") or ctype.startswith("application/octet-stream")
+        ):
+            return False
+        return True
+
+    @staticmethod
+    def _retry_after_seconds(resp: TransportResponse, fallback: float) -> float:
+        raw = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+        try:
+            return max(0.0, min(30.0, float(raw)))
+        except (TypeError, ValueError):
+            return fallback
 
     async def fetch_image(self, url: str) -> bytes:
         """Fetch raw image bytes through the same chain (used for covers/pages).
 
         Host rotation on CDN errors mirrors the API strategy: i1 → i2 → i3 →
         i4 (and t1 → t4 for thumbs), with the legacy i./t. hosts as fallbacks.
+        429/5xx responses are retried with ``Retry-After``/exponential backoff
+        before moving on to the next mirror.
         """
         parsed_host = url.split("/")[2]
         prefix = parsed_host.split(".")[0][:1]
@@ -279,19 +325,34 @@ class NhentaiClient:
             family = list(IMAGE_HOSTS) + list(LEGACY_IMAGE_HOSTS)
         candidates = [parsed_host] + [h for h in family if h != parsed_host]
         last: Exception | None = None
+        attempts = max(1, min(4, self.settings.max_retries))
         for host in candidates:
             alt_url = url.replace(parsed_host, host, 1)
-            try:
-                resp = await self._send(alt_url)
-            except (TimeoutError, OSError) as e:
-                last = e
-                continue
-            if resp.status == 200 and resp.content:
-                return resp.content
-            if looks_like_challenge(resp.status, resp.headers, resp.content):
-                last = BlockedError(f"{host}: challenge on image CDN")
-                continue
-            last = BlockedError(f"{host}: HTTP {resp.status} for image")
+            backoff = 0.5
+            for attempt in range(attempts):
+                try:
+                    resp = await self._send(alt_url, headers=self._image_headers())
+                except (TimeoutError, OSError) as e:
+                    last = e
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, 4.0)
+                    continue
+                if looks_like_challenge(resp.status, resp.headers, resp.content):
+                    last = BlockedError(f"{host}: challenge on image CDN")
+                    break  # rotate to the next host
+                if resp.status == 429 or resp.status >= 500:
+                    last = BlockedError(f"{host}: HTTP {resp.status} for image")
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(
+                            self._retry_after_seconds(resp, backoff)
+                        )
+                        backoff = min(backoff * 2, 4.0)
+                    continue
+                if resp.status == 200 and self._valid_image_response(resp):
+                    return resp.content
+                last = BlockedError(f"{host}: HTTP {resp.status} for image")
+                break  # non-retryable (404 etc.) → next mirror
         raise BlockedError(f"could not fetch image {url}: {last}", [url])
 
     # ------------------------------------------------------------- API methods

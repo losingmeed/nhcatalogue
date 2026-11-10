@@ -31,13 +31,47 @@ class App:
         self._client = None
         self._downloader = None
         self._syncer = None
+        self._page_cache = None
 
     def _load_settings(self) -> None:
         stored = self.db_sync_settings()
+        raw: dict | None = None
         if "settings" in stored and isinstance(stored["settings"], dict):
-            self.settings = Settings.from_dict(stored["settings"])
+            raw = stored["settings"]
         elif stored:
-            self.settings = Settings.from_dict(stored)
+            raw = stored
+        if raw is None:
+            return
+        self.settings = Settings.from_dict(raw)
+        self._upgrade_old_defaults(raw)
+
+    def _upgrade_old_defaults(self, raw: dict) -> None:
+        """One-time move from the old polite defaults to the Fast preset.
+
+        Settings written before ``download_page_concurrency`` existed carry the
+        old 1 req/s defaults, which make downloads crawl. Upgrade only when the
+        user never customised those knobs, then persist so it happens once.
+        """
+        if "download_page_concurrency" in raw:
+            return
+        try:
+            untouched = (
+                float(raw.get("rate_limit_rps", 1.0)) == 1.0
+                and float(raw.get("rate_limit_jitter", 0.35)) == 0.35
+                and int(raw.get("host_concurrency", 3)) == 3
+                and int(raw.get("download_workers", 3)) == 3
+            )
+        except (TypeError, ValueError):
+            untouched = False
+        if not untouched:
+            return
+        self.settings.rate_limit_rps = 4.0
+        self.settings.rate_limit_jitter = 0.15
+        self.settings.host_concurrency = 6
+        self.settings.download_workers = 4
+        self.settings.download_page_concurrency = 6
+        self.settings.page_cache_max_mb = 2048
+        self.save_settings()
 
     def db_sync_settings(self) -> dict:
         """Synchronous settings read at boot (before the loop matters)."""
@@ -103,6 +137,18 @@ class App:
         d = self.data_dir / "covers"
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    @property
+    def page_cache(self):
+        """Lazy collection-only page cache (see :mod:`nhcatalogue.pagecache`)."""
+        if self._page_cache is None:
+            from .pagecache import PageCache
+
+            self._page_cache = PageCache(
+                self.data_dir / "page_cache",
+                self.settings.page_cache_max_mb * 1024 * 1024,
+            )
+        return self._page_cache
 
     def close(self) -> None:
         import asyncio
