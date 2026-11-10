@@ -547,6 +547,20 @@ class TestReader:
         assert r.json()["num_pages"] == 4
         assert r.json()["pages"][0]["n"] == 1
 
+    def test_read_without_adding_to_catalogue(self, server):
+        # Big Pickle: you can read a gallery straight from its page — no need
+        # to add it to the catalogue first. Uncatalogued galleries resolve live
+        # and are served through the temporary reader cache.
+        tc, app, transport = server
+        # deliberately do NOT call /api/catalogue
+        r = tc.get("/api/reader/101/page/2", headers=H(app))
+        assert r.status_code == 200
+        assert r.content == b"IMG-BYTES"
+        assert r.headers["content-type"].startswith("image/")
+        # served through the temporary reader cache, not the permanent one
+        assert app.temp_page_cache.get(101, 2, "jpg", 4) is not None
+        assert app.page_cache.get(101, 2, "jpg", 4) is None
+
     def test_cover_cached(self, server):
         tc, app, _ = server
         tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
