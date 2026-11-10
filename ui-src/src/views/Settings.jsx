@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import {
+  THEME_GROUPS,
+  THEME_PRESETS,
+  applyTheme,
+  normalizeHex,
+  normalizeTheme,
+  presetKeyFor,
+} from "../theme.js";
 
 // Settings (plan §6.9): domains/mirrors editor, proxy + test + status,
 // cf_clearance + UA paste, FlareSolverr URL, library root, folder template,
-// rate limits, reader prefs.
+// rate limits, reader prefs, full colour theme.
 function Row({ label, hint, children }) {
   return (
     <div className="flex flex-wrap items-center gap-3 py-2">
@@ -11,6 +19,45 @@ function Row({ label, hint, children }) {
       <div className="min-w-64 flex-1">{children}</div>
       {hint && <div className="w-full pl-52 text-[11px] text-slate-600">{hint}</div>}
     </div>
+  );
+}
+
+// One colour token: native picker + editable hex field. Invalid text reverts
+// on blur so the live theme never receives a broken value.
+function ColorField({ label, value, onChange }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    const hex = normalizeHex(draft);
+    if (hex) onChange(hex);
+    else setDraft(value);
+  };
+
+  return (
+    <label className="flex items-center gap-2 py-0.5 text-xs">
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        title={label}
+        aria-label={label}
+      />
+      <span className="min-w-0 flex-1 truncate text-slate-300">{label}</span>
+      <input
+        className="w-24 px-1.5 py-0.5 font-mono text-[11px] uppercase"
+        value={draft}
+        spellCheck={false}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+    </label>
   );
 }
 
@@ -59,6 +106,21 @@ export default function SettingsView({ settings, reload }) {
     )?.[0] || "custom";
   const applyPreset = (name) => setS((prev) => ({ ...prev, ...PRESETS[name] }));
 
+  // ---- theme (live preview; persisted with the rest of the settings) ------
+  const theme = normalizeTheme(s.ui_prefs?.theme);
+  const activeThemePreset = presetKeyFor(theme);
+
+  const setTheme = (next) => {
+    setS((prev) => ({
+      ...prev,
+      ui_prefs: { ...(prev.ui_prefs || {}), theme: next },
+    }));
+    applyTheme(next);
+  };
+  const setThemeColor = (key, value) =>
+    setTheme(normalizeTheme({ ...theme, [key]: value }));
+  const applyThemePreset = (name) => setTheme({ ...THEME_PRESETS[name].colors });
+
   const save = async (extra = {}) => {
     setSaving(true);
     setMessage("");
@@ -79,6 +141,7 @@ export default function SettingsView({ settings, reload }) {
         page_cache_max_mb: +s.page_cache_max_mb,
         temp_page_cache_ttl_s: +s.temp_page_cache_ttl_s,
         watchlist_interval_hours: +s.watchlist_interval_hours,
+        ui_prefs: s.ui_prefs || {},
         ...extra,
       };
       const r = await api.put("/api/settings", { patch });
@@ -114,6 +177,98 @@ export default function SettingsView({ settings, reload }) {
     <div className="mx-auto max-w-4xl p-6">
       <h1 className="mb-4 text-lg font-semibold">Settings</h1>
       {message && <div className="mb-3 text-sm text-indigo-300">{message}</div>}
+
+      {/* ---------------------------------------------------------------- theme */}
+      <section className="card mb-4 p-4">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            theme
+          </h2>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {Object.entries(THEME_PRESETS).map(([key, preset]) => (
+              <button
+                key={key}
+                className={`btn text-xs ${activeThemePreset === key ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => applyThemePreset(key)}
+                title={`apply the ${preset.label} palette`}
+              >
+                <span
+                  className="inline-block h-3 w-3 rounded-full border border-white/20"
+                  style={{ background: preset.colors.accent }}
+                />
+                {preset.label}
+              </button>
+            ))}
+            {activeThemePreset === "custom" && (
+              <span className="text-xs text-slate-500">custom</span>
+            )}
+            <button
+              className="btn btn-ghost text-xs"
+              onClick={() => applyThemePreset("midnight")}
+              title="restore the default colours"
+            >
+              reset
+            </button>
+          </div>
+        </div>
+        <div className="mb-3 text-[11px] text-slate-500">
+          Every colour in the app is editable here. Changes preview live — press
+          “save settings” to keep them.
+        </div>
+
+        {/* live sample using the same utility classes as the rest of the app */}
+        <div className="mb-4 rounded-md border border-line-strong bg-panel-alt p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-200">Primary text</span>
+            <span className="text-xs text-slate-400">secondary</span>
+            <span className="text-xs text-slate-500">muted</span>
+            <button className="btn btn-primary text-xs" type="button">
+              primary
+            </button>
+            <button className="btn btn-ghost text-xs" type="button">
+              ghost
+            </button>
+            <button className="btn btn-danger text-xs" type="button">
+              danger
+            </button>
+            <span className="rounded-full border border-violet-700/50 bg-violet-600/25 px-2 py-0.5 text-xs text-violet-200">
+              artist
+            </span>
+            <span className="rounded-full border border-teal-700/50 bg-teal-600/25 px-2 py-0.5 text-xs text-teal-200">
+              character
+            </span>
+            <span className="rounded-full border border-pink-700/50 bg-pink-600/25 px-2 py-0.5 text-xs text-pink-200">
+              group
+            </span>
+            <span className="rounded-full border border-sky-700/50 bg-sky-600/25 px-2 py-0.5 text-xs text-sky-200">
+              language
+            </span>
+            <span className="rounded-full border border-emerald-700/50 bg-emerald-600/25 px-2 py-0.5 text-xs text-emerald-200">
+              category
+            </span>
+            <span className="text-xs text-rose-300">error</span>
+            <span className="text-xs text-amber-300">warning</span>
+          </div>
+        </div>
+
+        <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2 xl:grid-cols-3">
+          {THEME_GROUPS.map((group) => (
+            <div key={group.label}>
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                {group.label}
+              </h3>
+              {group.keys.map(([key, label]) => (
+                <ColorField
+                  key={key}
+                  label={label}
+                  value={theme[key]}
+                  onChange={(value) => setThemeColor(key, value)}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </section>
 
       {/* ------------------------------------------------ access / restrictions */}
       <section className="card mb-4 p-4">

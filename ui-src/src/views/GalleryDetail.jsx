@@ -99,7 +99,7 @@ export default function GalleryDetail({ id }) {
           src={mediaUrl(g.cover_url || `/api/cover/${g.id}`)}
           alt={g.title}
           eager
-          wrapperClassName="aspect-[5/7] w-56 rounded-lg border border-[#222734]"
+          wrapperClassName="aspect-[5/7] w-56 rounded-lg border border-line"
           className="h-full w-full object-cover"
         />
         <div className="min-w-72 flex-1">
@@ -229,7 +229,7 @@ export default function GalleryDetail({ id }) {
                 src={pageUrl(g.id, p.n)}
                 alt={`page ${p.n}`}
                 eager
-                wrapperClassName="h-48 min-w-32 shrink-0 cursor-pointer overflow-hidden rounded border border-[#222734] bg-[#0f1218]"
+                wrapperClassName="h-48 min-w-32 shrink-0 cursor-pointer overflow-hidden rounded border border-line bg-panel-deep"
                 className="h-full w-auto object-contain"
                 onClick={() => navigate(`/reader/${g.id}?page=${p.n}`)}
               />

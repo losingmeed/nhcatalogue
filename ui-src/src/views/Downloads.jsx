@@ -97,7 +97,7 @@ export default function Downloads() {
                     {q.status}
                   </span>
                 </div>
-                <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-[#222734]">
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-panel-alt">
                   <div
                     className={`h-full rounded ${
                       q.status === "error"

@@ -143,7 +143,7 @@ export default function TagsBrowser() {
                   className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                     isSel
                       ? "border-indigo-500 bg-indigo-600/40 text-white"
-                      : "border-[#2a2f3d] bg-[#14171f] text-slate-300 hover:border-indigo-600/60"
+                      : "border-line-strong bg-panel text-slate-300 hover:border-indigo-600/60"
                   }`}
                 >
                   {t.name}

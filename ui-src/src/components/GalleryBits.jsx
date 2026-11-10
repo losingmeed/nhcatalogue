@@ -54,7 +54,7 @@ export function GalleryCard({ gallery, actions, footer }) {
       className="card group cursor-pointer transition-transform hover:-translate-y-0.5 hover:border-indigo-600/60"
       onClick={() => navigate(`/gallery/${g.id}`)}
     >
-      <div className="relative aspect-[5/7] w-full overflow-hidden bg-[#0f1218]">
+      <div className="relative aspect-[5/7] w-full overflow-hidden bg-panel-deep">
         <AsyncImage
           src={mediaUrl(g.cover_url || `/api/cover/${g.id}`)}
           alt={g.title}

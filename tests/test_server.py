@@ -706,6 +706,41 @@ class TestSettings:
         r = tc.put("/api/settings", json={"patch": {"folder_template": "{nope}"}}, headers=H(app))
         assert r.status_code == 422
 
+    def test_theme_persists_and_merges(self, server):
+        tc, app, _ = server
+        theme = {"bg": "#101820", "accent": "#ff6600"}
+        r = tc.put(
+            "/api/settings",
+            json={"patch": {"rate_limit_rps": 4, "ui_prefs": {"theme": theme}}},
+            headers=H(app),
+        )
+        assert r.status_code == 200
+        assert r.json()["ui_prefs"]["theme"] == theme
+        # a later patch to another ui_pref must not drop the saved theme
+        r = tc.put(
+            "/api/settings",
+            json={"patch": {"ui_prefs": {"something_else": 1}}},
+            headers=H(app),
+        )
+        assert r.status_code == 200
+        assert app.settings.ui_prefs["theme"] == theme
+        assert app.settings.ui_prefs["something_else"] == 1
+
+    def test_theme_validation(self, server):
+        tc, app, _ = server
+        r = tc.put(
+            "/api/settings",
+            json={
+                "patch": {
+                    "rate_limit_rps": 4,
+                    "ui_prefs": {"theme": {"bg": "not-a-colour"}},
+                }
+            },
+            headers=H(app),
+        )
+        assert r.status_code == 422
+        assert "ui_prefs.theme.bg" in r.json()["detail"]
+
     def test_settings_test_connection(self, server):
         tc, app, transport = server
         transport.add_json(

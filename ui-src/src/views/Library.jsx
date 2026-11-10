@@ -150,7 +150,7 @@ export default function Library() {
   return (
     <div className="flex h-full">
       {/* facet sidebar */}
-      <aside className="w-56 shrink-0 space-y-3 overflow-y-auto border-r border-[#222734] bg-[#0e1118] p-3">
+      <aside className="w-56 shrink-0 space-y-3 overflow-y-auto border-r border-line bg-surface p-3">
         <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
           tag filters
         </div>
@@ -224,7 +224,7 @@ export default function Library() {
           )}
         </div>
 
-        <div className="border-t border-[#222734] pt-2">
+        <div className="border-t border-line pt-2">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
             filters
           </div>

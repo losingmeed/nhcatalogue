@@ -129,6 +129,16 @@ class Settings:
             errors.append("watchlist_interval_hours: minimum 1 hour")
         if self.dedup_mode not in ("skip", "symlink"):
             errors.append("dedup_mode: must be 'skip' or 'symlink'")
+        theme = self.ui_prefs.get("theme") if isinstance(self.ui_prefs, dict) else None
+        if theme is not None:
+            if not isinstance(theme, dict):
+                errors.append("ui_prefs.theme: must be an object of colour tokens")
+            else:
+                for key, value in theme.items():
+                    if not isinstance(key, str) or not re.fullmatch(
+                        r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?", str(value or "")
+                    ):
+                        errors.append(f"ui_prefs.theme.{key}: must be a hex colour")
         # folder template vars
         allowed_vars = {"artist", "parody", "character", "language", "id", "title"}
         for var in re.findall(r"\{(\w+)\}", self.folder_template):
@@ -160,6 +170,10 @@ class Settings:
                     continue
             elif isinstance(cur, str):
                 value = "" if value is None else str(value)
+            elif isinstance(cur, dict) and isinstance(value, dict):
+                merged = dict(cur)
+                merged.update(value)
+                value = merged
             elif isinstance(cur, list) and isinstance(value, list):
                 value = [str(v).strip() for v in value if str(v).strip()]
             setattr(self, key, value)

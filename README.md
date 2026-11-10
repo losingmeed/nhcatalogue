@@ -13,6 +13,7 @@ A **local catalogue, browser and downloader for [nhentai.net](https://nhentai.ne
 - **Download** into a templated folder library — `library/<artist>/<id> - <title>/001.jpg …` + `cover.jpg` + Houdoku-compatible `metadata.json` — resumable, deduped, import-friendly.
 - **Read** — single/double-page, long-strip, RTL toggle, keyboard nav, preloading, remembers your position. Streams pages through the backend proxy (preview pages are cached briefly and promoted when you save) or reads from disk.
 - **Automate** — watchlists (saved searches) sync in the background, auto-add new galleries, optionally auto-download them.
+- **Theme it** — every colour is a token. Settings → theme has six presets (Midnight, Ocean, Forest, Grape, Ember, Mono), a picker for each token, live preview, and one-click reset. The theme is saved with your settings and cached locally so it paints instantly on launch.
 - **Beat blocks** — domain rotation + browser TLS impersonation + `cf_clearance` injection + FlareSolverr + proxy, in one strategy chain.
 
 ## Install
@@ -120,7 +121,7 @@ the permanent cache or their downloaded folder.
 ## Development
 
 ```bash
-pytest            # 137 tests — all mocked, zero network calls
+pytest            # 139 tests — all mocked, zero network calls
 ruff check src tests   # if installed
 cd ui-src && npm run dev   # Vite dev server (proxies /api to :8787)
 ```
@@ -160,7 +161,7 @@ nhcatalogue/
 │   ├── sync/                   # watchlist background engine
 │   ├── server/                 # FastAPI routes + SPA hosting (token-guarded)
 │   └── ui/dist/                # built React app (served when present)
-├── ui-src/                     # React + Vite + Tailwind source (dark theme)
+├── ui-src/                     # React + Vite + Tailwind source (themeable)
 ├── tests/                      # pytest, all mocked
 └── scripts/smoke_server.py     # local-only uvicorn smoke check
 ```

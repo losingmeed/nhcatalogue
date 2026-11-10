@@ -114,9 +114,9 @@ export default function TagPicker({ selected = [], blacklisted = [], onSelect, o
         {blacklisted.length > 0 ? ` · ${blacklisted.length} blocked` : ""}
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border border-[#2a2f3d] bg-[#171b25] shadow-xl">
+        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-md border border-line-strong bg-panel-alt shadow-xl">
           <input
-            className="w-full rounded-none border-0 border-b border-[#2a2f3d] bg-transparent px-3 py-1.5 text-xs"
+            className="w-full rounded-none border-0 border-b border-line-strong bg-transparent px-3 py-1.5 text-xs"
             placeholder="search nhentai tags…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -177,7 +177,7 @@ export default function TagPicker({ selected = [], blacklisted = [], onSelect, o
               </div>
             )}
           </div>
-          <div className="flex items-center justify-between border-t border-[#2a2f3d] px-3 py-1 text-[10px] text-slate-500">
+          <div className="flex items-center justify-between border-t border-line-strong px-3 py-1 text-[10px] text-slate-500">
             <span>{source === "live" ? "live · nhentai" : source === "local" ? "local tags" : ""}</span>
             <span>{error}</span>
           </div>

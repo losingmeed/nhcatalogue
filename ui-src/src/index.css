@@ -1,40 +1,173 @@
 @import "tailwindcss";
 
+/* --------------------------------------------------------------------------
+   Theme tokens
+   Every colour in the UI resolves through these variables. Settings writes
+   them onto :root at runtime, so the whole app recolours live. The defaults
+   below match the Midnight preset in src/theme.js.
+   -------------------------------------------------------------------------- */
 :root {
   color-scheme: dark;
+
+  --nhc-bg: #0b0d12;
+  --nhc-surface: #0e1118;
+  --nhc-panel: #14171f;
+  --nhc-panel-alt: #171b25;
+  --nhc-panel-deep: #0f1218;
+  --nhc-border: #222734;
+  --nhc-border-strong: #2a2f3d;
+  --nhc-scrollbar: #2a2f3d;
+  --nhc-skeleton: #1c2130;
+  --nhc-overlay: #000000;
+  --nhc-on-accent: #ffffff;
+  --nhc-text: #e6e9ef;
+  --nhc-text-secondary: #cbd5e1;
+  --nhc-muted: #94a3b8;
+  --nhc-subtle: #64748b;
+  --nhc-faint: #475569;
+  --nhc-accent: #4f46e5;
+  --nhc-accent-hover: #6366f1;
+  --nhc-accent-text: #c7d2fe;
+  --nhc-accent-soft: #1e1b4b;
+  --nhc-accent-border: #4338ca;
+  --nhc-danger: #be123c;
+  --nhc-danger-hover: #e11d48;
+  --nhc-danger-text: #fda4af;
+  --nhc-danger-soft: #881337;
+  --nhc-danger-deep: #4c0519;
+  --nhc-success: #10b981;
+  --nhc-success-text: #6ee7b7;
+  --nhc-success-soft: #064e3b;
+  --nhc-warning: #f59e0b;
+  --nhc-warning-text: #fcd34d;
+  --nhc-warning-soft: #451a03;
+  --nhc-tag-artist: #7c3aed;
+  --nhc-tag-character: #0d9488;
+  --nhc-tag-group: #db2777;
+  --nhc-tag-language: #0284c7;
+}
+
+/* Remap the Tailwind palette used by the views onto the theme tokens. This
+   keeps every existing utility class (text-slate-400, bg-indigo-600/30, …)
+   in sync with the colour pickers without touching each component. */
+@theme {
+  --color-black: var(--nhc-overlay);
+  --color-white: var(--nhc-on-accent);
+
+  --color-slate-200: var(--nhc-text);
+  --color-slate-300: var(--nhc-text-secondary);
+  --color-slate-400: var(--nhc-muted);
+  --color-slate-500: var(--nhc-subtle);
+  --color-slate-600: var(--nhc-faint);
+  --color-slate-700: var(--nhc-border-strong);
+  --color-slate-800: var(--nhc-panel-alt);
+  --color-slate-900: var(--nhc-panel);
+
+  --color-indigo-200: var(--nhc-accent-text);
+  --color-indigo-300: var(--nhc-accent-text);
+  --color-indigo-500: var(--nhc-accent-hover);
+  --color-indigo-600: var(--nhc-accent);
+  --color-indigo-700: var(--nhc-accent-border);
+  --color-indigo-950: var(--nhc-accent-soft);
+
+  --color-rose-100: color-mix(in srgb, var(--nhc-danger-text) 55%, white);
+  --color-rose-200: var(--nhc-danger-text);
+  --color-rose-300: var(--nhc-danger-text);
+  --color-rose-400: color-mix(in srgb, var(--nhc-danger) 55%, white);
+  --color-rose-600: var(--nhc-danger-hover);
+  --color-rose-700: var(--nhc-danger);
+  --color-rose-800: color-mix(in srgb, var(--nhc-danger) 80%, black);
+  --color-rose-900: var(--nhc-danger-soft);
+  --color-rose-950: var(--nhc-danger-deep);
+
+  --color-emerald-200: var(--nhc-success-text);
+  --color-emerald-300: var(--nhc-success-text);
+  --color-emerald-400: color-mix(in srgb, var(--nhc-success) 60%, white);
+  --color-emerald-500: var(--nhc-success);
+  --color-emerald-600: var(--nhc-success);
+  --color-emerald-700: color-mix(in srgb, var(--nhc-success) 75%, black);
+  --color-emerald-900: var(--nhc-success-soft);
+
+  --color-amber-200: var(--nhc-warning-text);
+  --color-amber-300: var(--nhc-warning);
+  --color-amber-600: var(--nhc-warning);
+  --color-amber-700: color-mix(in srgb, var(--nhc-warning) 75%, black);
+  --color-amber-800: color-mix(in srgb, var(--nhc-warning) 65%, black);
+  --color-amber-950: var(--nhc-warning-soft);
+
+  --color-sky-200: color-mix(in srgb, var(--nhc-tag-language) 45%, white);
+  --color-sky-300: color-mix(in srgb, var(--nhc-tag-language) 60%, white);
+  --color-sky-500: var(--nhc-tag-language);
+  --color-sky-600: var(--nhc-tag-language);
+  --color-sky-700: color-mix(in srgb, var(--nhc-tag-language) 75%, black);
+
+  --color-violet-200: color-mix(in srgb, var(--nhc-tag-artist) 45%, white);
+  --color-violet-600: var(--nhc-tag-artist);
+  --color-violet-700: color-mix(in srgb, var(--nhc-tag-artist) 75%, black);
+
+  --color-teal-200: color-mix(in srgb, var(--nhc-tag-character) 45%, white);
+  --color-teal-600: var(--nhc-tag-character);
+  --color-teal-700: color-mix(in srgb, var(--nhc-tag-character) 75%, black);
+
+  --color-pink-200: color-mix(in srgb, var(--nhc-tag-group) 45%, white);
+  --color-pink-600: var(--nhc-tag-group);
+  --color-pink-700: color-mix(in srgb, var(--nhc-tag-group) 75%, black);
 }
 
 html,
 body,
 #root {
   height: 100%;
-  background: #0b0d12;
-  color: #e6e9ef;
+  background: var(--nhc-bg);
+  color: var(--nhc-text);
 }
 
 body {
   font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 
-/* thin dark scrollbars */
+/* theme-aware surface helpers (replaces hard-coded hex in components) */
+.bg-page {
+  background-color: var(--nhc-bg);
+}
+.bg-surface {
+  background-color: var(--nhc-surface);
+}
+.bg-panel {
+  background-color: var(--nhc-panel);
+}
+.bg-panel-alt {
+  background-color: var(--nhc-panel-alt);
+}
+.bg-panel-deep {
+  background-color: var(--nhc-panel-deep);
+}
+.border-line {
+  border-color: var(--nhc-border);
+}
+.border-line-strong {
+  border-color: var(--nhc-border-strong);
+}
+
+/* thin theme-aware scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2a2f3d transparent;
+  scrollbar-color: var(--nhc-scrollbar) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #2a2f3d;
+  background: var(--nhc-scrollbar);
   border-radius: 8px;
 }
 
 input,
 select,
 textarea {
-  background: #14171f;
-  border: 1px solid #2a2f3d;
+  background: var(--nhc-panel);
+  border: 1px solid var(--nhc-border-strong);
   border-radius: 6px;
   padding: 6px 10px;
   color: inherit;
@@ -43,7 +176,30 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #6d7cff;
+  border-color: var(--nhc-accent);
+}
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress {
+  accent-color: var(--nhc-accent);
+}
+
+input[type="color"] {
+  width: 2.25rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid var(--nhc-border-strong);
+  border-radius: 4px;
 }
 
 .btn {
@@ -63,7 +219,9 @@ textarea:focus {
 }
 
 .card {
-  @apply rounded-lg bg-[#14171f] border border-[#222734] overflow-hidden;
+  @apply rounded-lg border overflow-hidden;
+  background: var(--nhc-panel);
+  border-color: var(--nhc-border);
 }
 
 @keyframes nhc-shimmer {
@@ -75,7 +233,12 @@ textarea:focus {
   }
 }
 .skeleton {
-  background: linear-gradient(90deg, #14171f 25%, #1c2130 37%, #14171f 63%);
+  background: linear-gradient(
+    90deg,
+    var(--nhc-panel) 25%,
+    var(--nhc-skeleton) 37%,
+    var(--nhc-panel) 63%
+  );
   background-size: 400% 100%;
   animation: nhc-shimmer 1.4s ease infinite;
 }

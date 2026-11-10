@@ -156,7 +156,7 @@ export default function Reader({ id }) {
   if (!info)
     return (
       <div className="flex h-full flex-col">
-        <div className="flex items-center gap-3 border-b border-[#222734] bg-[#0e1118] px-4 py-2">
+        <div className="flex items-center gap-3 border-b border-line bg-surface px-4 py-2">
           <div className="skeleton h-6 w-20 rounded" />
           <div className="skeleton h-4 w-64 rounded" />
           <div className="skeleton ml-auto h-4 w-16 rounded" />
@@ -174,7 +174,7 @@ export default function Reader({ id }) {
     <div className="relative flex h-full flex-col" ref={stripRef}>
       {/* top toolbar */}
       {showBar && (
-        <div className="flex flex-wrap items-center gap-3 border-b border-[#222734] bg-[#0e1118] px-4 py-2 text-sm">
+        <div className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-2 text-sm">
           <button className="btn btn-ghost" onClick={() => navigate(`/gallery/${id}`)}>
             ← back
           </button>
@@ -241,7 +241,7 @@ export default function Reader({ id }) {
       )}
 
       {/* bottom bar */}
-      <div className="flex items-center gap-3 border-t border-[#222734] bg-[#0e1118] px-4 py-2">
+      <div className="flex items-center gap-3 border-t border-line bg-surface px-4 py-2">
         <button className="btn btn-ghost" onClick={() => go(-1)} disabled={page <= 1}>
           ← prev
         </button>

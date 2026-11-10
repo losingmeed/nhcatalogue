@@ -11,6 +11,7 @@ import Watchlists from "./views/Watchlists.jsx";
 import Downloads from "./views/Downloads.jsx";
 import SettingsView from "./views/Settings.jsx";
 import FirstRun from "./views/FirstRun.jsx";
+import { applyTheme } from "./theme.js";
 
 // tiny hash router: #/browse, #/gallery/123, #/reader/123, ...
 function useRoute() {
@@ -57,6 +58,14 @@ export default function App() {
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  // apply the saved theme whenever settings load/change (Settings previews
+  // live too, but this covers startup, first run, and reloads after save).
+  // Re-applying on navigation also discards an unsaved preview when you leave
+  // Settings without pressing save.
+  useEffect(() => {
+    if (settings && !settings.error) applyTheme(settings.ui_prefs?.theme);
+  }, [settings, route.view]);
 
   const view = useMemo(() => {
     switch (route.view) {
@@ -110,7 +119,7 @@ export default function App() {
   return (
     <div className="flex h-full">
       {!isReader && (
-        <aside className="flex w-48 shrink-0 flex-col border-r border-[#222734] bg-[#0e1118]">
+        <aside className="flex w-48 shrink-0 flex-col border-r border-line bg-surface">
           <div className="px-4 py-4 text-lg font-bold tracking-wide text-indigo-300">
             nh<span className="text-slate-200">catalogue</span>
           </div>
