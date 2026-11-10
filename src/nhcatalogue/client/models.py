@@ -68,12 +68,45 @@ class Tag:
 
 @dataclass
 class Page:
-    """One page of a gallery: 1-based number, dimensions and extension."""
+    """One page of a gallery: 1-based number, dimensions and extension.
+
+    ``path`` is the CDN-relative path returned by the v2 API
+    (``galleries/<media_id>/<n>.<ext>``); it is empty for galleries imported
+    from v1-shaped metadata, in which case the URL is reconstructed from
+    ``media_id`` + ``number`` + ``ext``.
+    """
 
     number: int
     ext: str  # jpg/png/gif/webp
     width: int = 0
     height: int = 0
+    path: str = ""
+
+
+def ext_from_path(path: str, default: str = "jpg") -> str:
+    """Real extension from a CDN path (``.../1.jpg``, ``.../cover.jpg.webp``)."""
+    name = (path or "").rsplit("/", 1)[-1]
+    if "." not in name:
+        return default
+    ext = name.rsplit(".", 1)[-1].lower()
+    return "jpg" if ext == "jpeg" else (ext or default)
+
+
+def sniff_image_ext(data: bytes, default: str = "jpg") -> str:
+    """Detect the real image format from magic bytes.
+
+    v2 covers are WebP even when the CDN path says ``cover.jpg.webp``, so
+    naming/caching by the URL suffix alone would serve the wrong MIME type.
+    """
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"GIF":
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:2] == b"\xff\xd8":
+        return "jpg"
+    return default
 
 
 @dataclass
@@ -86,6 +119,9 @@ class Gallery:
     pages: list[Page] = field(default_factory=list)
     cover_ext: str = "jpg"
     thumb_ext: str = "jpg"
+    cover_path: str = ""
+    thumb_path: str = ""
+    tag_ids: list[int] = field(default_factory=list)
     tags: list[Tag] = field(default_factory=list)
     num_pages: int = 0
     upload_date: int = 0
@@ -131,38 +167,102 @@ class Gallery:
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> Gallery:
-        images = raw.get("images") or {}
-        raw_pages = images.get("pages") or []
-        pages = [
-            Page(
-                number=i + 1,
-                ext=EXT_MAP.get(str(p.get("t", "j")).lower(), "jpg"),
-                width=int(p.get("w", 0) or 0),
-                height=int(p.get("h", 0) or 0),
-            )
-            for i, p in enumerate(raw_pages)
-        ]
+        # v2 search/list payloads are lightweight: no title object, no pages.
+        if "images" not in raw and "pages" not in raw and "english_title" in raw:
+            return cls.from_list_item(raw)
+
         title = raw.get("title") or {}
         tags = [Tag.from_api(t) for t in raw.get("tags") or []]
+        raw_pages = raw.get("pages")
+        cover = raw.get("cover") or {}
+        thumb = raw.get("thumbnail") or {}
+
+        if raw_pages is not None:
+            # v2 detail shape: pages/cover carry CDN-relative paths
+            pages = [
+                Page(
+                    number=int(p.get("number") or i + 1),
+                    ext=ext_from_path(p.get("path", ""), default=str(p.get("ext") or "jpg")),
+                    width=int(p.get("width", 0) or 0),
+                    height=int(p.get("height", 0) or 0),
+                    path=str(p.get("path") or ""),
+                )
+                for i, p in enumerate(raw_pages)
+            ]
+            cover_path = str(cover.get("path") or "")
+            thumb_path = str(thumb.get("path") or "")
+            cover_ext = (
+                ext_from_path(cover_path)
+                if cover_path
+                else EXT_MAP.get(str(cover.get("t") or "j").lower(), "jpg")
+            )
+            thumb_ext = (
+                ext_from_path(thumb_path)
+                if thumb_path
+                else EXT_MAP.get(str(thumb.get("t") or "j").lower(), "jpg")
+            )
+        else:
+            # legacy v1 shape: images.{pages,cover,thumbnail} with extension codes
+            images = raw.get("images") or {}
+            pages = [
+                Page(
+                    number=i + 1,
+                    ext=EXT_MAP.get(str(p.get("t", "j")).lower(), "jpg"),
+                    width=int(p.get("w", 0) or 0),
+                    height=int(p.get("h", 0) or 0),
+                )
+                for i, p in enumerate(images.get("pages") or [])
+            ]
+            cover = images.get("cover") or {}
+            thumb = images.get("thumbnail") or {}
+            cover_path = ""
+            thumb_path = ""
+            cover_ext = EXT_MAP.get(str(cover.get("t", "j")).lower(), "jpg")
+            thumb_ext = EXT_MAP.get(str(thumb.get("t", "j")).lower(), "jpg")
+
         # mirror quirk: some mirrors omit num_pages
         num_pages = int(raw.get("num_pages") or len(pages) or 0)
-        cover = images.get("cover") or {}
-        thumb = images.get("thumbnail") or {}
-        g = cls(
+        return cls(
             id=int(raw.get("id", 0)),
             media_id=str(raw.get("media_id", "")),
             title_en=str(title.get("english") or ""),
             title_ja=str(title.get("japanese") or ""),
             title_pretty=str(title.get("pretty") or ""),
             pages=pages,
-            cover_ext=EXT_MAP.get(str(cover.get("t", "j")).lower(), "jpg"),
-            thumb_ext=EXT_MAP.get(str(thumb.get("t", "j")).lower(), "jpg"),
+            cover_ext=cover_ext,
+            thumb_ext=thumb_ext,
+            cover_path=cover_path,
+            thumb_path=thumb_path,
+            tag_ids=[t.id for t in tags],
             tags=tags,
             num_pages=num_pages,
             upload_date=int(raw.get("upload_date", 0) or 0),
             scanlator=str(raw.get("scanlator") or ""),
         )
-        return g
+
+    @classmethod
+    def from_list_item(cls, raw: dict[str, Any]) -> Gallery:
+        """v2 search result (GalleryListItem): no tags/pages, only tag ids.
+
+        The cover path is derived from the thumbnail path so the grid can show
+        a cover without a second detail request.
+        """
+        thumb = str(raw.get("thumbnail") or "")
+        title_en = str(raw.get("english_title") or raw.get("title") or "")
+        return cls(
+            id=int(raw.get("id", 0)),
+            media_id=str(raw.get("media_id", "")),
+            title_en=title_en,
+            title_ja=str(raw.get("japanese_title") or ""),
+            title_pretty=title_en,
+            cover_path=thumb.replace("/thumb.", "/cover.").replace("thumb.", "cover.", 1),
+            thumb_path=thumb,
+            cover_ext=ext_from_path(thumb),
+            thumb_ext=ext_from_path(thumb),
+            tag_ids=[int(i) for i in raw.get("tag_ids") or []],
+            num_pages=int(raw.get("num_pages", 0) or 0),
+            upload_date=int(raw.get("upload_date", 0) or 0),
+        )
 
 
 @dataclass
@@ -177,9 +277,18 @@ class SearchResult:
         results = raw.get("result")
         if results is None:  # mirror quirk: some mirrors return a bare list
             results = raw if isinstance(raw, list) else []
+        if isinstance(raw, list):
+            page_no = page
+            total_pages = 0
+            per_page = 25
+        else:
+            # v2 uses num_pages; v1 used pages
+            page_no = int(raw.get("page", page) or page)
+            total_pages = int(raw.get("num_pages") or raw.get("pages") or 0)
+            per_page = int(raw.get("per_page", 25) or 25)
         return cls(
             galleries=[Gallery.from_api(g) for g in results],
-            page=int(raw.get("page", page) if not isinstance(raw, list) else page),
-            total_pages=int(raw.get("pages", 0) if not isinstance(raw, list) else 0),
-            per_page=int(raw.get("per_page", 25) if not isinstance(raw, list) else 25),
+            page=page_no,
+            total_pages=total_pages,
+            per_page=per_page,
         )

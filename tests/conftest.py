@@ -15,6 +15,13 @@ from nhcatalogue.client.models import Tag
 from nhcatalogue.client.transport import Transport, TransportResponse
 from nhcatalogue.config import Settings
 
+DEFAULT_TAGS = [
+    {"id": 1, "name": "full color", "type": "tag", "count": 42000},
+    {"id": 2, "name": "someartist", "type": "artist", "count": 300},
+    {"id": 3, "name": "english", "type": "language", "count": 99000},
+    {"id": 4, "name": "manga", "type": "category", "count": 120000},
+]
+
 
 def make_gallery_raw(
     gid: int,
@@ -24,30 +31,88 @@ def make_gallery_raw(
     tags: list[dict] | None = None,
     title: str = "Test Gallery",
 ) -> dict:
+    """v2 ``GET /api/v2/galleries/{id}`` detail shape (paths + full tags)."""
     if tags is None:
-        tags = [
-            {"id": 1, "name": "full color", "type": "tag", "count": 42000},
-            {"id": 2, "name": "someartist", "type": "artist", "count": 300},
-            {"id": 3, "name": "english", "type": "language", "count": 99000},
-            {"id": 4, "name": "manga", "type": "category", "count": 120000},
-        ]
+        tags = [dict(t) for t in DEFAULT_TAGS]
     return {
         "id": gid,
         "media_id": media_id,
         "title": {"english": title, "japanese": "テスト", "pretty": f"{title} [Digital]"},
-        "images": {
-            "pages": [{"t": "j", "w": 1280, "h": 1808} for _ in range(pages)],
-            "cover": {"t": "j", "w": 350, "h": 500},
-            "thumbnail": {"t": "j", "w": 250, "h": 354},
+        "cover": {
+            "path": f"galleries/{media_id}/cover.jpg.webp",
+            "width": 350,
+            "height": 498,
         },
+        "thumbnail": {
+            "path": f"galleries/{media_id}/thumb.jpg.webp",
+            "width": 250,
+            "height": 356,
+        },
+        "scanlator": "",
+        "pages": [
+            {
+                "number": i + 1,
+                "path": f"galleries/{media_id}/{i + 1}.jpg",
+                "width": 1280,
+                "height": 1808,
+                "thumbnail": f"galleries/{media_id}/{i + 1}t.jpg.webp",
+            }
+            for i in range(pages)
+        ],
         "tags": tags,
         "num_pages": pages,
+        "num_favorites": 0,
         "upload_date": 1700000000,
     }
 
 
+def gallery_list_item(raw: dict) -> dict:
+    """Convert a detail fixture into a v2 search-result ``GalleryListItem``."""
+    media_id = str(raw.get("media_id", ""))
+    title = raw.get("title") or {}
+    thumb = (raw.get("thumbnail") or {}).get("path") or (
+        f"galleries/{media_id}/thumb.jpg.webp"
+    )
+    return {
+        "id": raw["id"],
+        "media_id": media_id,
+        "english_title": title.get("english", ""),
+        "japanese_title": title.get("japanese"),
+        "thumbnail": thumb,
+        "thumbnail_width": 250,
+        "thumbnail_height": 356,
+        "num_pages": raw.get("num_pages", 0),
+        "num_favorites": 0,
+        "tag_ids": [t["id"] for t in raw.get("tags") or []],
+        "blacklisted": False,
+        "suggestion": None,
+    }
+
+
 def make_search_raw(galleries: list[dict], page: int = 1, pages: int = 1) -> dict:
-    return {"result": galleries, "page": page, "pages": pages, "per_page": 25}
+    """v2 ``PaginatedResponse[GalleryListItem]`` shape."""
+    return {
+        "result": [gallery_list_item(g) for g in galleries],
+        "num_pages": pages,
+        "per_page": 25,
+        "total": len(galleries) * pages,
+    }
+
+
+def make_tags_raw(tags: list[dict] | None = None) -> list[dict]:
+    """v2 ``GET /api/v2/tags/ids`` payload (list of TagResponse)."""
+    return [
+        {
+            "id": t["id"],
+            "type": t["type"],
+            "name": t["name"],
+            "slug": t["name"].replace(" ", "-"),
+            "url": f"/{t['type']}/{t['name'].replace(' ', '-')}/",
+            "count": t.get("count", 0),
+            "description": None,
+        }
+        for t in (tags if tags is not None else DEFAULT_TAGS)
+    ]
 
 
 CHALLENGE_BODY = b"""<html><head><title>Just a moment...</title>

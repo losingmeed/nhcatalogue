@@ -10,6 +10,7 @@ from .models import (
     Tag,
     normalize_tag_name,
     normalize_type,
+    sniff_image_ext,
 )
 from .ratelimit import RateLimiter
 from .transport import HAS_CURL_CFFI, FlareSolverrSession, Transport, TransportResponse
@@ -28,6 +29,7 @@ __all__ = [
     "Page",
     "normalize_tag_name",
     "normalize_type",
+    "sniff_image_ext",
     "Transport",
     "TransportResponse",
     "FlareSolverrSession",

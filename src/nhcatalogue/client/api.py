@@ -11,14 +11,15 @@ Request strategy chain (plan §1), applied to every outbound request:
 On a detected Cloudflare challenge we escalate: next domain → … → FlareSolverr
 → BlockedError("blocked → what to do") which the UI renders as a banner.
 
-API endpoints (nhentai public JSON API):
+API endpoints (nhentai public JSON API, v2):
 
-* ``GET /api/galleries/search?query=&page=&sort=``
-* ``GET /api/galleries/{id}``
-* ``GET /api/galleries/all?page=``
-* ``GET /api/galleries/tagged/{tag_id}``
-* images: ``https://i{n}.nhentai.net/galleries/{media_id}/{page}.{ext}``
-  thumbs/covers: ``https://t{n}.nhentai.net/galleries/{media_id}/cover.{ext}``
+* ``GET /api/v2/search?query=&page=&sort=``
+* ``GET /api/v2/galleries/{id}``
+* ``GET /api/v2/galleries?page=``
+* ``GET /api/v2/galleries/tagged?tag_id=&page=&sort=``
+* ``GET /api/v2/tags/ids?ids=1,2,3`` (resolve search-result tag ids)
+* images: ``https://i{1-4}.nhentai.net/{page.path}``
+  thumbs/covers: ``https://t{1-4}.nhentai.net/{cover.path}``
 """
 
 from __future__ import annotations
@@ -29,17 +30,34 @@ import random
 from collections.abc import Mapping
 from typing import Any
 
-from ..config import FALLBACK_USER_AGENT, IMAGE_HOSTS, THUMB_HOSTS, Settings
+from ..config import (
+    FALLBACK_USER_AGENT,
+    IMAGE_HOSTS,
+    LEGACY_IMAGE_HOSTS,
+    LEGACY_THUMB_HOSTS,
+    THUMB_HOSTS,
+    Settings,
+)
 from .challenge import looks_like_challenge
 from .domains import DomainRotator
 from .errors import BlockedError, NotFoundError, RateLimitedError
-from .models import Gallery, SearchResult
+from .models import Gallery, SearchResult, Tag
 from .ratelimit import RateLimiter
 from .transport import FlareSolverrSession, Transport, TransportResponse, build_transport
 
 log = logging.getLogger("nhcatalogue.client")
 
 SORTS = ("date", "popular", "popular-month", "popular-week", "popular-today")
+
+# nhentai v2 JSON API (v1 endpoints were retired: they now answer
+# ``403 Use new API https://nhentai.net/api/v2/docs``).
+SEARCH_PATH = "/api/v2/search"
+ALL_GALLERIES_PATH = "/api/v2/galleries"
+GALLERY_PATH = "/api/v2/galleries/{id}"
+TAGGED_PATH = "/api/v2/galleries/tagged"
+TAGS_BY_IDS_PATH = "/api/v2/tags/ids"
+CONFIG_PATH = "/api/v2/config"
+TAG_CHUNK = 50
 
 
 class NhentaiClient:
@@ -59,6 +77,7 @@ class NhentaiClient:
         self._runtime_cookies: dict[str, str] = {}
         self._runtime_ua: str | None = None
         self._flaresolverr: FlareSolverrSession | None = None
+        self._tag_cache: dict[int, Tag] = {}
         self.last_blocked: BlockedError | None = None
 
     # ------------------------------------------------------------------ helpers
@@ -137,7 +156,7 @@ class NhentaiClient:
 
     async def _request_json(
         self, path: str, params: Mapping[str, Any] | None = None
-    ) -> dict[str, Any]:
+    ) -> Any:
         """GET a JSON API path through the full strategy chain.
 
         Chain: for each domain in rotation order → request → on challenge/block,
@@ -225,32 +244,40 @@ class NhentaiClient:
     # ------------------------------------------------------------ image URLs
 
     def page_url(self, gallery: Gallery, page: int, host: int = 0) -> str:
-        """Image URL builder with i/i2/i5/i7 mirrors (plan §1)."""
-        hosts = list(IMAGE_HOSTS) + list(THUMB_HOSTS)
-        h = hosts[host % len(hosts)] if host else IMAGE_HOSTS[0]
+        """Image URL builder with i1–i4 mirrors (plan §1)."""
+        h = IMAGE_HOSTS[host % len(IMAGE_HOSTS)]
         p = gallery.pages[page - 1]
+        if p.path:
+            return f"https://{h}/{p.path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/{page}.{p.ext}"
 
     def cover_url(self, gallery: Gallery, host: int = 0) -> str:
-        hosts = THUMB_HOSTS
-        h = hosts[host % len(hosts)]
+        h = THUMB_HOSTS[host % len(THUMB_HOSTS)]
+        if gallery.cover_path:
+            return f"https://{h}/{gallery.cover_path.lstrip('/')}"
+        if gallery.thumb_path:
+            return f"https://{h}/{gallery.thumb_path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/cover.{gallery.cover_ext}"
 
     def thumb_url(self, gallery: Gallery, host: int = 0) -> str:
-        hosts = THUMB_HOSTS
-        h = hosts[host % len(hosts)]
+        h = THUMB_HOSTS[host % len(THUMB_HOSTS)]
+        if gallery.thumb_path:
+            return f"https://{h}/{gallery.thumb_path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/thumb.{gallery.thumb_ext}"
 
     async def fetch_image(self, url: str) -> bytes:
         """Fetch raw image bytes through the same chain (used for covers/pages).
 
-        Host rotation on CDN errors mirrors the API strategy: i → i2 → i5 → i7.
+        Host rotation on CDN errors mirrors the API strategy: i1 → i2 → i3 →
+        i4 (and t1 → t4 for thumbs), with the legacy i./t. hosts as fallbacks.
         """
         parsed_host = url.split("/")[2]
-        host_family = [h for h in IMAGE_HOSTS if h.split(".")[0] == parsed_host.split(".")[0]]
-        candidates = [parsed_host] if not host_family else [parsed_host] + [
-            h for h in IMAGE_HOSTS if h != parsed_host
-        ]
+        prefix = parsed_host.split(".")[0][:1]
+        if prefix == "t":
+            family = list(THUMB_HOSTS) + list(LEGACY_THUMB_HOSTS)
+        else:
+            family = list(IMAGE_HOSTS) + list(LEGACY_IMAGE_HOSTS)
+        candidates = [parsed_host] + [h for h in family if h != parsed_host]
         last: Exception | None = None
         for host in candidates:
             alt_url = url.replace(parsed_host, host, 1)
@@ -269,40 +296,83 @@ class NhentaiClient:
 
     # ------------------------------------------------------------- API methods
 
+    async def _resolve_tags(self, galleries: list[Gallery]) -> None:
+        """Best-effort tag resolution for v2 list items (one batched request).
+
+        Search results only carry ``tag_ids``; the catalogue grid and cards use
+        language/artist tags, so resolve them once per page. Failures are
+        non-fatal — the search itself already succeeded.
+        """
+        wanted: set[int] = set()
+        for g in galleries:
+            if not g.tags:
+                wanted.update(g.tag_ids)
+        missing = sorted(i for i in wanted if i not in self._tag_cache)
+        try:
+            for start in range(0, len(missing), TAG_CHUNK):
+                chunk = missing[start : start + TAG_CHUNK]
+                if not chunk:
+                    continue
+                raw = await self._request_json(
+                    TAGS_BY_IDS_PATH, {"ids": ",".join(str(i) for i in chunk)}
+                )
+                for item in raw if isinstance(raw, list) else []:
+                    tag = Tag.from_api(item)
+                    self._tag_cache[tag.id] = tag
+        except Exception as e:  # tags are decorative here — never fail the search
+            log.debug("tag resolution failed: %s", e)
+        for g in galleries:
+            if g.tags:
+                continue
+            g.tags = [self._tag_cache[i] for i in g.tag_ids if i in self._tag_cache]
+
     async def search(self, query: str, page: int = 1, sort: str = "") -> SearchResult:
         """Full nhentai query syntax: tag:, artist:, parody:, character:, group:,
         language:, category:, -tag exclusions, quoted phrases."""
+        if not (query or "").strip():
+            return await self.all_galleries(page)
         if sort and sort not in SORTS:
             sort = ""
-        raw = await self._request_json(
-            "/api/galleries/search", {"query": query, "page": page, "sort": sort}
-        )
-        return SearchResult.from_api(raw, page)
+        params: dict[str, Any] = {"query": query, "page": page}
+        if sort:
+            params["sort"] = sort
+        raw = await self._request_json(SEARCH_PATH, params)
+        result = SearchResult.from_api(raw, page)
+        await self._resolve_tags(result.galleries)
+        return result
 
     async def gallery(self, gallery_id: int) -> Gallery:
-        raw = await self._request_json(f"/api/galleries/{int(gallery_id)}")
+        raw = await self._request_json(GALLERY_PATH.format(id=int(gallery_id)))
         return Gallery.from_api(raw)
 
     async def all_galleries(self, page: int = 1) -> SearchResult:
-        raw = await self._request_json("/api/galleries/all", {"page": page})
-        return SearchResult.from_api(raw, page)
+        raw = await self._request_json(ALL_GALLERIES_PATH, {"page": page})
+        result = SearchResult.from_api(raw, page)
+        await self._resolve_tags(result.galleries)
+        return result
 
     async def tagged(self, tag_id: int, page: int = 1, sort: str = "") -> SearchResult:
         if sort and sort not in SORTS:
             sort = ""
-        raw = await self._request_json(
-            f"/api/galleries/tagged/{int(tag_id)}", {"page": page, "sort": sort}
-        )
-        return SearchResult.from_api(raw, page)
+        params: dict[str, Any] = {"tag_id": int(tag_id), "page": page}
+        if sort:
+            params["sort"] = sort
+        raw = await self._request_json(TAGGED_PATH, params)
+        result = SearchResult.from_api(raw, page)
+        await self._resolve_tags(result.galleries)
+        return result
 
     async def test_connection(self) -> dict:
         """Settings → 'Test connection' button. Returns a status dict."""
         try:
-            raw = await self._request_json("/api/galleries/all", {"page": 1})
-            n = len(raw.get("result", [])) if isinstance(raw, dict) else 0
+            raw = await self._request_json(CONFIG_PATH)
+            servers = len(raw.get("image_servers") or []) if isinstance(raw, dict) else 0
             return {
                 "ok": True,
-                "message": f"Connected via {self.rotator.order()[0]} ({n} results).",
+                "message": (
+                    f"Connected via {self.rotator.order()[0]} "
+                    f"(v2 API, {servers} image CDNs)."
+                ),
                 "transport": self.transport.name,
                 "domain": self.rotator.order()[0],
             }

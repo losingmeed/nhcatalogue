@@ -194,7 +194,7 @@ class TestManifestResume:
             folder = app.downloader.gallery_folder(g)
             assert (folder / "001.jpg").exists()
             assert (folder / "002.jpg").exists()
-            assert (folder / "cover.jpg").exists()
+            assert (folder / "cover.webp").exists()
             assert (folder / "metadata.json").exists()
             assert (folder / ".nhc.json").exists()
             row = asyncio.run(app.db.get_gallery(88))

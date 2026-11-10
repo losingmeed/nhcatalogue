@@ -24,7 +24,7 @@ source .venv/bin/activate
 
 pip install -e .            # core: fastapi uvicorn httpx[socks] pillow
 pip install -e ".[tls]"     # curl_cffi — Chrome TLS impersonation (recommended!)
-pip install -e ".[desktop]" # pywebview + pystray — native window + tray
+pip install -e ".[desktop]" # pywebview (Qt on Linux) + pystray — window + tray
 pip install -e ".[dev]"     # pytest etc.
 
 # build the UI (needs node + npm):

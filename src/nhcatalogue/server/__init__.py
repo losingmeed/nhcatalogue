@@ -15,13 +15,14 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ..client import Gallery
+from ..client import Gallery, sniff_image_ext
 from ..downloader import gallery_from_dict
 from ..downloader.manifests import read_manifest
 
@@ -135,6 +136,12 @@ def create_app(app: App) -> FastAPI:
 
     GUARD = Depends(guard)
 
+    def _cover_url(g: Gallery) -> str:
+        """Cover endpoint URL, carrying the v2 CDN path when we have one."""
+        if g.cover_path:
+            return f"/api/cover/{g.id}?path={quote(g.cover_path, safe='')}"
+        return f"/api/cover/{g.id}?media_id={g.media_id}&ext={g.cover_ext}"
+
     def _serialize_gallery(g: dict, *, include_raw: bool = False) -> dict:
         out = {
             "id": g["id"],
@@ -201,7 +208,7 @@ def create_app(app: App) -> FastAPI:
                         {"id": t.id, "name": t.name, "type": t.type, "count": t.count}
                         for t in g.tags
                     ],
-                    "cover_url": f"/api/cover/{g.id}?media_id={g.media_id}&ext={g.cover_ext}",
+                    "cover_url": _cover_url(g),
                     "in_catalogue": (g.id in catalogue_ids_cache),
                 }
                 for g in result.galleries
@@ -249,7 +256,7 @@ def create_app(app: App) -> FastAPI:
             "last_read_at": "",
             "download_status": "none",
             "folder_path": "",
-            "cover_url": f"/api/cover/{g.id}?media_id={g.media_id}&ext={g.cover_ext}",
+            "cover_url": _cover_url(g),
             "in_catalogue": False,
             "pages": [{"n": p.number, "ext": p.ext, "w": p.width, "h": p.height} for p in g.pages],
         }
@@ -320,7 +327,7 @@ def create_app(app: App) -> FastAPI:
         await app.db.upsert_gallery(g)
         try:
             cover = await app.client.fetch_image(app.client.cover_url(g))
-            ext = "png" if cover[:4] == b"\x89PNG" else ("gif" if cover[:3] == b"GIF" else "jpg")
+            ext = sniff_image_ext(cover)
             path = app.covers_dir / f"{g.id}.{ext}"
             path.write_bytes(cover)
             await app.db.update_user_data(g.id, {"cover_path": str(path)})
@@ -585,7 +592,7 @@ def create_app(app: App) -> FastAPI:
             raise
         except Exception as e:
             raise HTTPException(502, str(e)) from e
-        ext = "png" if data[:4] == b"\x89PNG" else ("gif" if data[:3] == b"GIF" else "jpg")
+        ext = sniff_image_ext(data)
         return Response(
             content=data,
             media_type=f"image/{ext}",
@@ -618,13 +625,20 @@ def create_app(app: App) -> FastAPI:
     # -------------------------------------------------------------------- cover
 
     @api.get("/api/cover/{gallery_id}", dependencies=[GUARD])
-    async def api_cover(gallery_id: int, media_id: str = "", ext: str = "jpg") -> Response:
+    async def api_cover(
+        gallery_id: int, media_id: str = "", ext: str = "jpg", path: str = ""
+    ) -> Response:
         """Local cover cache; else fetch via the client and cache."""
         cached = list(app.covers_dir.glob(f"{gallery_id}.*"))
         if cached:
             return _file_response(cached[0])
         row = await app.db.get_gallery(gallery_id)
         if row is None:
+            if path:
+                data = await _proxy_path(path)
+                ext_use = path.rsplit(".", 1)[-1].lower()
+                media = f"image/{ext_use if ext_use != 'jpg' else 'jpeg'}"
+                return Response(content=data, media_type=media)
             if not media_id:
                 raise HTTPException(404, "no cover without media_id for uncatalogued gallery")
             ext_use = ext or "jpg"
@@ -637,7 +651,7 @@ def create_app(app: App) -> FastAPI:
             data = await app.client.fetch_image(app.client.cover_url(g))
         except Exception as e:
             raise HTTPException(502, str(e)) from e
-        ext2 = "png" if data[:4] == b"\x89PNG" else ("gif" if data[:3] == b"GIF" else "jpg")
+        ext2 = sniff_image_ext(data)
         path = app.covers_dir / f"{gallery_id}.{ext2}"
         path.write_bytes(data)
         await app.db.update_user_data(gallery_id, {"cover_path": str(path)})
@@ -647,19 +661,31 @@ def create_app(app: App) -> FastAPI:
             headers={"Cache-Control": "private, max-age=86400"},
         )
 
-    async def _proxy_thumb(gallery_id: int, media_id: str, ext: str, kind: str) -> bytes:
-        g = Gallery(
-            id=gallery_id,
-            media_id=media_id,
-            title_en="",
-            title_ja="",
-            title_pretty="",
-            cover_ext=ext,
-        )
+    async def _proxy_path(path: str) -> bytes:
+        from ..config import THUMB_HOSTS
+
+        url = f"https://{THUMB_HOSTS[0]}/{path.lstrip('/')}"
         try:
-            return await app.client.fetch_image(app.client.cover_url(g))
+            return await app.client.fetch_image(url)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
+
+    async def _proxy_thumb(gallery_id: int, media_id: str, ext: str, kind: str) -> bytes:
+        # v2 covers are served as webp with the original extension in the name
+        # (``cover.jpg.webp``); fall back to the legacy path for old mirrors.
+        candidates = []
+        if ext and ext != "webp":
+            candidates.append(f"galleries/{media_id}/cover.{ext}.webp")
+        candidates.extend(
+            [f"galleries/{media_id}/cover.{ext or 'jpg'}", f"galleries/{media_id}/cover.webp"]
+        )
+        last: HTTPException | None = None
+        for path in candidates:
+            try:
+                return await _proxy_path(path)
+            except HTTPException as e:
+                last = e
+        raise last or HTTPException(502, "cover not found")
 
     # ------------------------------------------------------------------ settings
 

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import __version__
 from .app import App
+from .client.models import sniff_image_ext
 
 
 def _print_gallery(g: dict) -> None:
@@ -60,7 +61,7 @@ async def cmd_add(app: App, args) -> int:
         # cache the cover so the catalogue grid works offline
         try:
             cover = await client.fetch_image(client.cover_url(gallery))
-            path = app.covers_dir / f"{gallery.id}.jpg"
+            path = app.covers_dir / f"{gallery.id}.{sniff_image_ext(cover)}"
             path.write_bytes(cover)
             await app.db.update_user_data(gallery.id, {"cover_path": str(path)})
         except Exception as e:
@@ -168,7 +169,9 @@ async def cmd_gui(app: App, args) -> int:
     from .desktop import run_desktop
 
     app.save_settings()
-    await run_desktop(app, no_tray=args.no_tray)
+    # ``--no-tray`` only exists on the ``gui`` subparser, but gui is also the
+    # default command (no subcommand given), where the attribute is absent.
+    await run_desktop(app, no_tray=getattr(args, "no_tray", False))
     return 0
 
 

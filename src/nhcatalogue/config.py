@@ -23,9 +23,12 @@ MIRROR_SUGGESTIONS = [
     "nhentai.net",  # kept once at top; de-dup happens at validation time
 ]
 
-# Image / thumbnail CDN hosts. Mirrors are tried in order on failure.
-IMAGE_HOSTS = ["i.nhentai.net", "i2.nhentai.net", "i5.nhentai.net", "i7.nhentai.net"]
-THUMB_HOSTS = ["t.nhentai.net", "t2.nhentai.net", "t7.nhentai.net"]
+# Image / thumbnail CDN hosts (v2 /api/v2/cdn). Mirrors are tried in order on
+# failure. The legacy i./t. hosts are kept as extra fallbacks.
+IMAGE_HOSTS = ["i1.nhentai.net", "i2.nhentai.net", "i3.nhentai.net", "i4.nhentai.net"]
+THUMB_HOSTS = ["t1.nhentai.net", "t2.nhentai.net", "t3.nhentai.net", "t4.nhentai.net"]
+LEGACY_IMAGE_HOSTS = ["i.nhentai.net", "i5.nhentai.net", "i7.nhentai.net"]
+LEGACY_THUMB_HOSTS = ["t.nhentai.net", "t7.nhentai.net"]
 
 FALLBACK_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

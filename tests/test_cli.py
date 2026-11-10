@@ -7,7 +7,7 @@ import json
 from contextlib import redirect_stdout
 
 import pytest
-from conftest import MockTransport, make_gallery_raw, make_search_raw
+from conftest import MockTransport, make_gallery_raw, make_search_raw, make_tags_raw
 
 import nhcatalogue.client.api as api_mod
 from nhcatalogue.__main__ import main
@@ -36,8 +36,11 @@ def run_cli(argv):
 class TestCli:
     def test_search(self, tmp_path, mocked_client):
         mocked_client.add_json(
-            "https://nhentai.net/api/galleries/search?query=mi&page=1&sort=",
+            "https://nhentai.net/api/v2/search?query=mi&page=1",
             make_search_raw([make_gallery_raw(11, title="Found It")]),
+        )
+        mocked_client.add_json(
+            "https://nhentai.net/api/v2/tags/ids?ids=1%2C2%2C3%2C4", make_tags_raw()
         )
         rc, out = run_cli(["--data-dir", str(tmp_path), "search", "mi"])
         assert rc == 0
@@ -45,7 +48,7 @@ class TestCli:
 
     def test_add(self, tmp_path, mocked_client):
         mocked_client.add_json(
-            "https://nhentai.net/api/galleries/42", make_gallery_raw(42, pages=5, title="Added")
+            "https://nhentai.net/api/v2/galleries/42", make_gallery_raw(42, pages=5, title="Added")
         )
         rc, out = run_cli(["--data-dir", str(tmp_path), "add", "42"])
         assert rc == 0
@@ -58,7 +61,7 @@ class TestCli:
 
     def test_download(self, tmp_path, mocked_client):
         mocked_client.add_json(
-            "https://nhentai.net/api/galleries/77", make_gallery_raw(77, pages=3, title="DL Me")
+            "https://nhentai.net/api/v2/galleries/77", make_gallery_raw(77, pages=3, title="DL Me")
         )
         rc, out = run_cli(["--data-dir", str(tmp_path), "download", "77"])
         assert rc == 0
@@ -67,7 +70,7 @@ class TestCli:
         assert (folder / "001.jpg").exists()
         assert (folder / "002.jpg").exists()
         assert (folder / "003.jpg").exists()
-        assert (folder / "cover.jpg").exists()
+        assert (folder / "cover.webp").exists()
         assert (folder / "metadata.json").exists()
         assert (folder / ".nhc.json").exists()
         meta = json.loads((folder / "metadata.json").read_text())

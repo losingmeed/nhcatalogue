@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import MockTransport, make_gallery_raw, make_search_raw
+from conftest import MockTransport, make_gallery_raw, make_search_raw, make_tags_raw
 from fastapi.testclient import TestClient
 
 from nhcatalogue.app import App
@@ -26,10 +26,26 @@ def server(tmp_path):
     app.settings.rate_limit_rps = 1000
     app.settings.rate_limit_jitter = 0
     transport = MockTransport()
-    # live API mocks
-    transport.add_json("https://nhentai.net/api/galleries/search?query=mi&page=1&sort=", make_search_raw([make_gallery_raw(101, title="Mi Result")]))
-    transport.add_json("https://nhentai.net/api/galleries/101", make_gallery_raw(101, pages=4, title="Full Detail"))
-    transport.add_json("https://nhentai.net/api/galleries/202", make_gallery_raw(202, pages=2, title="Second"))
+    # live API mocks (v2)
+    transport.add_json(
+        "https://nhentai.net/api/v2/search?query=mi&page=1",
+        make_search_raw([make_gallery_raw(101, title="Mi Result")]),
+    )
+    transport.add_json(
+        "https://nhentai.net/api/v2/tags/ids?ids=1%2C2%2C3%2C4", make_tags_raw()
+    )
+    transport.add_json(
+        "https://nhentai.net/api/v2/galleries/101",
+        make_gallery_raw(101, pages=4, title="Full Detail"),
+    )
+    transport.add_json(
+        "https://nhentai.net/api/v2/galleries/202",
+        make_gallery_raw(202, pages=2, title="Second"),
+    )
+    transport.add_json(
+        "https://nhentai.net/api/v2/config",
+        {"image_servers": ["https://i1.nhentai.net"], "thumb_servers": ["https://t1.nhentai.net"]},
+    )
     transport.default = TransportResponse(200, {}, b"IMG-BYTES")
     client = NhentaiClient(app.settings, transport=transport)
     app._client = client
@@ -69,7 +85,7 @@ class TestSearch:
         assert r.status_code == 200
         body = r.json()
         assert body["results"][0]["id"] == 101
-        assert body["results"][0]["title_pretty"] == "Mi Result [Digital]"
+        assert body["results"][0]["title_pretty"] == "Mi Result"
         assert body["results"][0]["in_catalogue"] is False
 
     def test_gallery_detail_live(self, server):
@@ -234,8 +250,14 @@ class TestWatchlists:
     def test_crud_and_sync_now(self, server):
         tc, app, transport = server
         transport.add_json(
-            "https://nhentai.net/api/galleries/search?query=artist%3Ami&page=1&sort=date",
+            "https://nhentai.net/api/v2/search?query=artist%3Ami&page=1&sort=date",
             make_search_raw([make_gallery_raw(301), make_gallery_raw(302)]),
+        )
+        transport.add_json(
+            "https://nhentai.net/api/v2/galleries/301", make_gallery_raw(301)
+        )
+        transport.add_json(
+            "https://nhentai.net/api/v2/galleries/302", make_gallery_raw(302)
         )
         wl = tc.post(
             "/api/watchlists",
@@ -384,7 +406,10 @@ class TestSettings:
 
     def test_settings_test_connection(self, server):
         tc, app, transport = server
-        transport.add_json("https://nhentai.net/api/galleries/all?page=1", make_search_raw([make_gallery_raw(1)]))
+        transport.add_json(
+            "https://nhentai.net/api/v2/config",
+            {"image_servers": ["https://i1.nhentai.net"], "thumb_servers": ["https://t1.nhentai.net"]},
+        )
         r = tc.post("/api/settings/test", headers=H(app))
         assert r.status_code == 200
         assert r.json()["ok"] is True
@@ -393,6 +418,8 @@ class TestSettings:
         tc, app, transport = server
         from conftest import CHALLENGE_BODY
 
+        # drop the healthy config mock so the challenge default applies
+        transport.routes.pop("https://nhentai.net/api/v2/config", None)
         transport.default = TransportResponse(403, {"cf-mitigated": "challenge"}, CHALLENGE_BODY)
         r = tc.post("/api/settings/test", headers=H(app))
         body = r.json()

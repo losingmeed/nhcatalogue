@@ -199,7 +199,12 @@ class Database:
 
     @staticmethod
     def _gallery_raw_json(gallery: Gallery) -> str:
-        """Store the full normalized gallery as raw JSON for Houdoku export."""
+        """Store the full normalized gallery as raw JSON.
+
+        Keeps the Houdoku ``images`` block (v1 shape) for portability and adds
+        the v2 ``pages``/``cover``/``thumbnail`` paths so CDN URLs survive a
+        DB round-trip (mixed jpg/webp pages, webp covers).
+        """
         return json.dumps(
             {
                 "id": gallery.id,
@@ -209,9 +214,21 @@ class Database:
                     "japanese": gallery.title_ja,
                     "pretty": gallery.title_pretty,
                 },
+                "pages": [
+                    {
+                        "number": p.number,
+                        "path": p.path,
+                        "ext": p.ext,
+                        "width": p.width,
+                        "height": p.height,
+                    }
+                    for p in gallery.pages
+                ],
+                "cover": {"path": gallery.cover_path, "t": gallery.cover_ext[0]},
+                "thumbnail": {"path": gallery.thumb_path, "t": gallery.thumb_ext[0]},
                 "images": {
                     "pages": [
-                        {"t": p.ext[0] if p.ext[0] in "jpgg" else "j", "w": p.width, "h": p.height}
+                        {"t": p.ext[0] if p.ext[0] in "jpggw" else "j", "w": p.width, "h": p.height}
                         for p in gallery.pages
                     ],
                     "cover": {"t": gallery.cover_ext[0]},

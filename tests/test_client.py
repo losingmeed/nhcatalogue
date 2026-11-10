@@ -8,7 +8,14 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from conftest import CHALLENGE_BODY, MockTransport, make_gallery_raw, make_search_raw, mk_settings
+from conftest import (
+    CHALLENGE_BODY,
+    MockTransport,
+    make_gallery_raw,
+    make_search_raw,
+    make_tags_raw,
+    mk_settings,
+)
 
 from nhcatalogue.client import (
     BlockedError,
@@ -17,7 +24,12 @@ from nhcatalogue.client import (
 )
 from nhcatalogue.client.challenge import looks_like_challenge
 from nhcatalogue.client.domains import DomainRotator
-from nhcatalogue.client.models import Gallery, normalize_tag_name, normalize_type
+from nhcatalogue.client.models import (
+    Gallery,
+    normalize_tag_name,
+    normalize_type,
+    sniff_image_ext,
+)
 from nhcatalogue.client.ratelimit import RateLimiter
 from nhcatalogue.client.transport import TransportResponse
 
@@ -151,7 +163,9 @@ class TestNhentaiClient:
     async def test_search_success(self):
         raw = make_search_raw([make_gallery_raw(1), make_gallery_raw(2)])
         t = MockTransport()
-        t.add_json("https://nhentai.net/api/galleries/search?query=full+color&page=1&sort=", raw)
+        t.add_json("https://nhentai.net/api/v2/search?query=full+color&page=1", raw)
+        # v2 list items only carry tag_ids; the client resolves them in one batch
+        t.add_json("https://nhentai.net/api/v2/tags/ids?ids=1%2C2%2C3%2C4", make_tags_raw())
         c = client_with(t)
         res = await c.search("full color")
         assert [g.id for g in res.galleries] == [1, 2]
@@ -159,54 +173,66 @@ class TestNhentaiClient:
 
     async def test_gallery_detail_normalization(self):
         t = MockTransport()
-        t.add_json("https://nhentai.net/api/galleries/42", make_gallery_raw(42, pages=4))
+        t.add_json("https://nhentai.net/api/v2/galleries/42", make_gallery_raw(42, pages=4))
         c = client_with(t)
         g = await c.gallery(42)
         assert g.id == 42
         assert g.num_pages == 4
         assert [p.number for p in g.pages] == [1, 2, 3, 4]
         assert all(p.ext == "jpg" for p in g.pages)
+        assert g.pages[0].path == "galleries/1234/1.jpg"
+        assert g.cover_path == "galleries/1234/cover.jpg.webp"
         assert g.primary_artist == "someartist"
         assert g.language == "english"
 
     async def test_query_syntax_passthrough(self):
         t = MockTransport()
         t.add_json(
-            "https://nhentai.net/api/galleries/search?query=artist%3Ami+language%3Aenglish&page=1&sort=",
+            "https://nhentai.net/api/v2/search?query=artist%3Ami+language%3Aenglish&page=1",
             make_search_raw([]),
         )
         c = client_with(t)
         await c.search("artist:mi language:english")
         assert t.requests == [
-            "https://nhentai.net/api/galleries/search?query=artist%3Ami+language%3Aenglish&page=1&sort="
+            "https://nhentai.net/api/v2/search?query=artist%3Ami+language%3Aenglish&page=1"
         ]
+
+    async def test_empty_query_uses_all_galleries(self):
+        t = MockTransport()
+        t.add_json("https://nhentai.net/api/v2/galleries?page=2", make_search_raw([]))
+        c = client_with(t)
+        res = await c.search("", page=2)
+        assert res.galleries == []
+        assert t.requests == ["https://nhentai.net/api/v2/galleries?page=2"]
 
     async def test_404_raises_not_found(self):
         t = MockTransport()
-        t.routes["https://nhentai.net/api/galleries/999"] = TransportResponse(404, {}, b"")
+        t.routes["https://nhentai.net/api/v2/galleries/999"] = TransportResponse(404, {}, b"")
         c = client_with(t)
         with pytest.raises(NotFoundError):
             await c.gallery(999)
 
     async def test_challenge_rotates_to_next_domain(self):
         t = MockTransport()
-        t.add_challenge("https://nhentai.net/api/galleries/search?query=x&page=1&sort=")
+        t.add_challenge("https://nhentai.net/api/v2/search?query=x&page=1")
         t.add_json(
-            "https://mirror.example/api/galleries/search?query=x&page=1&sort=",
+            "https://mirror.example/api/v2/search?query=x&page=1",
             make_search_raw([make_gallery_raw(7)]),
         )
+        t.add_json("https://mirror.example/api/v2/tags/ids?ids=1%2C2%2C3%2C4", make_tags_raw())
         c = client_with(t)
         res = await c.search("x")
         assert res.galleries[0].id == 7
         # nhentai.net got challenged, mirror succeeded
-        assert "https://nhentai.net/api/galleries/search?query=x&page=1&sort=" in t.requests
+        assert "https://nhentai.net/api/v2/search?query=x&page=1" in t.requests
         assert any("mirror.example" in u for u in t.requests)
-        assert c.rotator.stats()[0]["consecutive_failures"] == 1
+        # the challenge was recorded (tag resolution later reports success)
+        assert c.rotator.stats()[0]["last_failure_reason"] == "cf-challenge"
 
     async def test_all_domains_blocked_raises_blocked(self):
         t = MockTransport()
         for d in ("nhentai.net", "mirror.example", "mirror2.example"):
-            t.add_challenge(f"https://{d}/api/galleries/search?query=x&page=1&sort=")
+            t.add_challenge(f"https://{d}/api/v2/search?query=x&page=1")
         c = client_with(t)
         with pytest.raises(BlockedError) as ei:
             await c.search("x")
@@ -215,9 +241,9 @@ class TestNhentaiClient:
 
     async def test_network_error_retries_then_rotates(self):
         t = MockTransport()
-        t.routes["https://nhentai.net/api/galleries/search?query=x&page=1&sort="] = OSError("conn reset")
+        t.routes["https://nhentai.net/api/v2/search?query=x&page=1"] = OSError("conn reset")
         t.add_json(
-            "https://mirror.example/api/galleries/search?query=x&page=1&sort=",
+            "https://mirror.example/api/v2/search?query=x&page=1",
             make_search_raw([]),
         )
         c = client_with(t)  # max_retries=1
@@ -227,13 +253,14 @@ class TestNhentaiClient:
 
     async def test_non_json_body_rotates(self):
         t = MockTransport()
-        t.routes["https://nhentai.net/api/galleries/search?query=x&page=1&sort="] = TransportResponse(
+        t.routes["https://nhentai.net/api/v2/search?query=x&page=1"] = TransportResponse(
             200, {}, b"<html>garbage</html>"
         )
         t.add_json(
-            "https://mirror.example/api/galleries/search?query=x&page=1&sort=",
+            "https://mirror.example/api/v2/search?query=x&page=1",
             make_search_raw([make_gallery_raw(5)]),
         )
+        t.add_json("https://mirror.example/api/v2/tags/ids?ids=1%2C2%2C3%2C4", make_tags_raw())
         c = client_with(t)
         res = await c.search("x")
         assert res.galleries[0].id == 5
@@ -248,10 +275,10 @@ class TestNhentaiClient:
                 return await super().request(method, url, headers=headers, cookies=cookies)
 
         t = Recorder()
-        t.add_json("https://nhentai.net/api/galleries/all?page=1", make_search_raw([]))
+        t.add_json("https://nhentai.net/api/v2/galleries?page=1", make_search_raw([]))
         s = mk_settings(cf_clearance="abc123", cf_user_agent="MyUA/1.0")
         c = NhentaiClient(s, transport=t)
-        await c.search("") if False else await c.all_galleries()
+        await c.all_galleries()
         assert sent["headers"]["User-Agent"] == "MyUA/1.0"
         assert sent["cookies"]["cf_clearance"] == "abc123"
 
@@ -263,22 +290,43 @@ class TestNhentaiClient:
     async def test_image_url_builders(self):
         c = client_with(MockTransport())
         g = Gallery.from_api(make_gallery_raw(1, media_id="999"))
-        assert c.page_url(g, 1) == "https://i.nhentai.net/galleries/999/1.jpg"
-        assert c.page_url(g, 2) == "https://i.nhentai.net/galleries/999/2.jpg"
-        assert c.cover_url(g) == "https://t.nhentai.net/galleries/999/cover.jpg"
-        assert c.thumb_url(g) == "https://t.nhentai.net/galleries/999/thumb.jpg"
+        assert c.page_url(g, 1) == "https://i1.nhentai.net/galleries/999/1.jpg"
+        assert c.page_url(g, 2) == "https://i1.nhentai.net/galleries/999/2.jpg"
+        assert c.cover_url(g) == "https://t1.nhentai.net/galleries/999/cover.jpg.webp"
+        assert c.thumb_url(g) == "https://t1.nhentai.net/galleries/999/thumb.jpg.webp"
         # mirror hosts are in the family list
         assert c.page_url(g, 1, host=1).startswith("https://i2.nhentai.net/")
         assert c.cover_url(g, host=1).startswith("https://t2.nhentai.net/")
 
+    async def test_image_url_builders_legacy_shape(self):
+        """v1-shaped raw data (no CDN paths) still reconstructs URLs."""
+        c = client_with(MockTransport())
+        g = Gallery.from_api(
+            {
+                "id": 1,
+                "media_id": "999",
+                "title": {"english": "x", "japanese": "", "pretty": "x"},
+                "images": {
+                    "pages": [{"t": "p", "w": 1, "h": 1}],
+                    "cover": {"t": "p"},
+                    "thumbnail": {"t": "p"},
+                },
+                "num_pages": 1,
+            }
+        )
+        assert c.page_url(g, 1) == "https://i1.nhentai.net/galleries/999/1.png"
+        assert c.cover_url(g) == "https://t1.nhentai.net/galleries/999/cover.png"
+
     async def test_fetch_image_rotates_cdn_hosts(self):
         t = MockTransport()
-        t.routes["https://i.nhentai.net/galleries/999/1.jpg"] = TransportResponse(403, {"cf-mitigated": "challenge"}, CHALLENGE_BODY)
+        t.routes["https://i1.nhentai.net/galleries/999/1.jpg"] = TransportResponse(
+            403, {"cf-mitigated": "challenge"}, CHALLENGE_BODY
+        )
         t.routes["https://i2.nhentai.net/galleries/999/1.jpg"] = TransportResponse(
             200, {}, b"\xff\xd8\xff\xe0fakejpg"
         )
         c = client_with(t)
-        data = await c.fetch_image("https://i.nhentai.net/galleries/999/1.jpg")
+        data = await c.fetch_image("https://i1.nhentai.net/galleries/999/1.jpg")
         assert data == b"\xff\xd8\xff\xe0fakejpg"
         assert any("i2.nhentai.net" in u for u in t.requests)
 
@@ -286,7 +334,7 @@ class TestNhentaiClient:
         t = MockTransport(default=TransportResponse(403, {"cf-mitigated": "challenge"}, CHALLENGE_BODY))
         c = client_with(t)
         with pytest.raises(BlockedError):
-            await c.fetch_image("https://i.nhentai.net/galleries/999/1.jpg")
+            await c.fetch_image("https://i1.nhentai.net/galleries/999/1.jpg")
 
     async def test_flaresolverr_success_path(self):
         """All domains challenged on round 1 → FlareSolverr solves → round 2 works."""
@@ -319,7 +367,7 @@ class TestNhentaiClient:
 
         t = Flippable()
         for d in ("nhentai.net", "mirror.example", "mirror2.example"):
-            t.add_challenge(f"https://{d}/api/galleries/search?query=x&page=1&sort=")
+            t.add_challenge(f"https://{d}/api/v2/search?query=x&page=1")
 
         class ClientWithFlip(NhentaiClient):
             async def _flaresolverr_solve(self, url):
@@ -336,7 +384,10 @@ class TestNhentaiClient:
     async def test_blocked_state_recorded(self):
         t = MockTransport()
         for d in ("nhentai.net", "mirror.example", "mirror2.example"):
-            t.routes[f"https://{d}/api/galleries/all?page=1"] = TransportResponse(
+            t.routes[f"https://{d}/api/v2/galleries?page=1"] = TransportResponse(
+                503, {}, b"service unavailable"
+            )
+            t.routes[f"https://{d}/api/v2/config"] = TransportResponse(
                 503, {}, b"service unavailable"
             )
         c = client_with(t)
@@ -385,7 +436,22 @@ class TestNormalization:
 
     def test_ext_map(self):
         raw = make_gallery_raw(1, pages=2)
-        raw["images"]["pages"][0]["t"] = "p"
-        raw["images"]["pages"][1]["t"] = "g"
+        raw["pages"][0]["path"] = "galleries/1234/1.png"
+        raw["pages"][1]["path"] = "galleries/1234/2.gif"
         g = Gallery.from_api(raw)
         assert [p.ext for p in g.pages] == ["png", "gif"]
+
+    def test_list_item_cover_path(self):
+        raw = make_search_raw([make_gallery_raw(5, media_id="9")])["result"][0]
+        g = Gallery.from_api(raw)
+        assert g.cover_path == "galleries/9/cover.jpg.webp"
+        assert g.thumb_path == "galleries/9/thumb.jpg.webp"
+        assert g.tag_ids == [1, 2, 3, 4]
+        assert g.title_pretty == "Test Gallery"
+
+    def test_sniff_image_ext(self):
+        assert sniff_image_ext(b"\x89PNG\r\n\x1a\n....") == "png"
+        assert sniff_image_ext(b"GIF89a....") == "gif"
+        assert sniff_image_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "webp"
+        assert sniff_image_ext(b"\xff\xd8\xff\xe0....") == "jpg"
+        assert sniff_image_ext(b"unknown") == "jpg"

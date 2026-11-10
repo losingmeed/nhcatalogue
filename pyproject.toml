@@ -21,7 +21,13 @@ dependencies = [
 # curl_cffi: browser TLS impersonation. Wheels may lag behind the very newest
 # Python versions; the client degrades to httpx automatically if missing.
 tls = ["curl_cffi>=0.6"]
-desktop = ["pywebview>=5.0", "pystray>=0.19"]
+desktop = [
+    # Linux needs an explicit GUI backend: pull in PyQt6 + WebEngine. Windows
+    # and macOS use the platform webview that ships with pywebview itself.
+    "pywebview[qt]>=5.0; sys_platform == 'linux'",
+    "pywebview>=5.0; sys_platform != 'linux'",
+    "pystray>=0.19",
+]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
 
 [project.scripts]

@@ -22,6 +22,12 @@ log = logging.getLogger("nhcatalogue.desktop")
 
 
 async def run_desktop(app: App, *, no_tray: bool = False) -> None:
+    """Run the local server in a worker thread and pywebview on the main thread.
+
+    pywebview (GTK/Qt/Cocoa) insists on owning the main thread, so uvicorn runs
+    its own event loop in a background thread while ``webview.start()`` blocks
+    the main one.
+    """
     import uvicorn
 
     port = pick_free_port()
@@ -30,8 +36,12 @@ async def run_desktop(app: App, *, no_tray: bool = False) -> None:
     server = uvicorn.Server(config)
     url = f"http://127.0.0.1:{port}/"
 
-    server_task = asyncio.create_task(server.serve(), name="uvicorn")
-    await asyncio.sleep(0.2)  # let the socket bind
+    server_thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+    server_thread.start()
+    for _ in range(200):  # wait for the socket to bind (max ~10s)
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
 
     # Inject the auth token into the page the webview loads. The UI stores it
     # in localStorage on first load and sends it as X-NHC-Token on every call.
@@ -40,14 +50,15 @@ async def run_desktop(app: App, *, no_tray: bool = False) -> None:
     def _browser_fallback() -> None:
         import webbrowser
 
-        print(f"pywebview unavailable — opening browser at {url}")
+        print(f"pywebview unavailable — opening browser at {url_with_token}")
         print(f"  auth token: {app.token}")
-        webbrowser.open(url)
+        webbrowser.open(url_with_token)
 
     def _run_webview() -> bool:
         try:
             import webview
         except Exception:
+            log.debug("pywebview not installed")
             return False
         try:
             window = webview.create_window(
@@ -58,28 +69,39 @@ async def run_desktop(app: App, *, no_tray: bool = False) -> None:
                 min_size=(900, 600),
                 text_select=True,
             )
-            if not no_tray:
-                try:
-                    _start_tray(app, window)
-                except Exception:
-                    log.exception("tray unavailable; window-only mode")
-            webview.start()  # blocks until window closes
+            if no_tray:
+                webview.start()  # must run on the main thread; blocks until close
+            else:
+                # Start the tray only after the GUI loop is up: pystray's
+                # GTK/AppIndicator backend must not initialise before Qt.
+                def _tray() -> None:
+                    try:
+                        _start_tray(app, window)
+                    except Exception:
+                        log.exception("tray unavailable; window-only mode")
+
+                webview.start(_tray)  # must run on the main thread; blocks until close
             return True
         except Exception:
             log.exception("webview failed")
             return False
 
-    loop = asyncio.get_running_loop()
-    ran = await loop.run_in_executor(None, _run_webview)
-    if not ran:
-        _browser_fallback()
-        await server_task  # serve until Ctrl+C
-    else:
+    try:
+        # No run_in_executor: pywebview requires the main thread.
+        ran = _run_webview()
+        if not ran:
+            _browser_fallback()
+            try:
+                await asyncio.Event().wait()  # serve until Ctrl+C
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
+    finally:
         server.should_exit = True
-        await asyncio.wait_for(server_task, timeout=5)
+        if server_thread.is_alive():
+            server_thread.join(timeout=5)
 
 
-def _make_tray_icon(app: App):
+def _make_tray_icon(app: App, window, allow_close: list[bool]):
     """Build a pystray icon with close-to-tray + open-library shortcuts."""
     try:
         import pystray
@@ -108,11 +130,16 @@ def _make_tray_icon(app: App):
             subprocess.Popen(["xdg-open", folder])
 
     def _quit(icon, item):
+        allow_close[0] = True  # let destroy() get past the close-to-tray hook
         icon.stop()
+        try:
+            window.destroy()
+        except Exception:
+            log.exception("failed to close window from tray")
 
     menu = pystray.Menu(
         pystray.MenuItem("Open library folder", lambda *_: _open_library()),
-        pystray.MenuItem("Show window", lambda *_: None, enabled=False),
+        pystray.MenuItem("Show window", lambda *_: window.show()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", _quit),
     )
@@ -120,10 +147,18 @@ def _make_tray_icon(app: App):
 
 
 def _start_tray(app: App, window) -> None:
-    icon = _make_tray_icon(app)
+    allow_close = [False]
+    icon = _make_tray_icon(app, window, allow_close)
     if icon is None:
         return
 
-    # pystray needs its own loop; close-to-tray hides the window instead of exit
-    window.on_closed = lambda: window.hide()
+    # close-to-tray: hide the window instead of quitting the app
+    def _on_closing() -> bool:
+        if allow_close[0]:
+            return True  # tray "Quit" asked for a real close
+        window.hide()
+        return False  # cancel the actual close
+
+    window.events.closing += _on_closing
+    # pystray needs its own loop
     threading.Thread(target=icon.run, daemon=True, name="tray").start()

@@ -15,6 +15,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from ..client.models import sniff_image_ext
+
 if TYPE_CHECKING:  # pragma: no cover
     from ..app import App
 
@@ -111,17 +113,25 @@ class SyncEngine:
         for g in result.galleries:
             if g.id <= cursor:
                 continue
-            await self.db.upsert_gallery(g)
+            # v2 search results are lightweight (no pages/tags) — fetch detail
+            # so downloads know the real per-page extensions and the catalogue
+            # has tags. A detail failure must not kill the sync.
+            try:
+                detail = await client.gallery(g.id)
+            except Exception as e:
+                log.warning("watchlist %s: detail fetch failed for %s: %s", wl["id"], g.id, e)
+                continue
+            await self.db.upsert_gallery(detail)
             # cover cache for instant offline catalogue grid
             try:
-                cover = await client.fetch_image(client.cover_url(g))
-                await self._cache_cover(g.id, cover)
+                cover = await client.fetch_image(client.cover_url(detail))
+                await self._cache_cover(detail.id, cover)
             except Exception as e:  # cover failure must not kill the sync
-                log.debug("cover fetch failed for %s: %s", g.id, e)
-            added.append(g.id)
-            new_cursor = max(new_cursor, g.id)
+                log.debug("cover fetch failed for %s: %s", detail.id, e)
+            added.append(detail.id)
+            new_cursor = max(new_cursor, detail.id)
             if wl["auto_download"]:
-                await self.app.downloader.enqueue(g.id)
+                await self.app.downloader.enqueue(detail.id)
 
         await self.db.watchlist_update(
             wl["id"],
@@ -134,17 +144,8 @@ class SyncEngine:
         return {"added": added, "count": len(added)}
 
     async def _cache_cover(self, gallery_id: int, data: bytes) -> None:
-        cache = self.app.covers_dir / f"{gallery_id}.jpg"
+        ext = sniff_image_ext(data)
+        cache = self.app.covers_dir / f"{gallery_id}.{ext}"
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_bytes(data)
         await self.db.update_user_data(gallery_id, {"cover_path": str(cache)})
-
-
-def _try_sniff_ext(data: bytes) -> str:
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "png"
-    if data[:3] == b"GIF":
-        return "gif"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp"
-    return "jpg"
