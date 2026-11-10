@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="nhcatalogue">
+  <rect width="256" height="256" rx="56" fill="#14171f"/>
+  <rect x="1.5" y="1.5" width="253" height="253" rx="54.5" fill="none" stroke="#2a2f3d" stroke-width="3"/>
+  <path d="M56 62c22-10 44-10 66 2v130c-22-12-44-12-66-2z" fill="#5a5a8c"/>
+  <path d="M200 62c-22-10-44-10-66 2v130c22-12 44-12 66-2z" fill="#6d6da8"/>
+  <path d="M128 64v130" stroke="#14171f" stroke-width="8"/>
+  <g stroke="#c7c7e8" stroke-width="6" stroke-linecap="round" opacity=".8">
+    <path d="M74 84c14-5 28-4 40 2"/>
+    <path d="M74 108c14-5 28-4 40 2"/>
+    <path d="M74 132c14-5 28-4 40 2"/>
+  </g>
+  <g stroke="#e2e2f5" stroke-width="6" stroke-linecap="round" opacity=".85">
+    <path d="M142 86c14-6 28-7 40-2"/>
+    <path d="M142 110c14-6 28-7 40-2"/>
+    <path d="M142 134c14-6 28-7 40-2"/>
+  </g>
+</svg>

@@ -43,6 +43,17 @@ python -m nhcatalogue            # or: nhcatalogue (console script)
 python -m nhcatalogue serve      # prints http://127.0.0.1:<port> + token
 ```
 
+### Desktop launcher
+
+Install an application-menu entry with an icon:
+
+```bash
+./scripts/install-desktop.sh
+```
+
+Then search for **nhcatalogue** in your application menu. The launcher points at
+this repo's `.venv`, so re-run the script if you move the project.
+
 CLI (headless / cron):
 
 ```bash
