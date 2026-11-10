@@ -19,9 +19,20 @@ import asyncio
 import sys
 from pathlib import Path
 
-from . import __version__
-from .app import App
-from .client.models import sniff_image_ext
+# When run as a standalone script (e.g. PyInstaller one-dir bundle) the
+# ``nhcatalogue`` package isn't on sys.path, so add the project root so the
+# absolute imports below resolve. As a module (``python -m nhcatalogue``) the
+# package is already importable and this block is skipped.
+if __package__ in (None, ""):
+    import sys
+
+    _root = Path(__file__).resolve().parent.parent
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+
+from nhcatalogue import __version__
+from nhcatalogue.app import App
+from nhcatalogue.client.models import sniff_image_ext
 
 
 def _print_gallery(g: dict) -> None:
@@ -133,7 +144,7 @@ async def cmd_sync(app: App, args) -> int:
 
 
 async def cmd_serve(app: App, args) -> int:
-    from .server import run_server
+    from nhcatalogue.server import run_server
 
     app.save_settings()
     await run_server(app, host=args.host, port=args.port, open_browser=not args.no_browser)
@@ -166,7 +177,7 @@ async def cmd_status(app: App, args) -> int:
 
 async def cmd_gui(app: App, args) -> int:
     """Desktop mode: free port → uvicorn → pywebview window (+ tray)."""
-    from .desktop import run_desktop
+    from nhcatalogue.desktop import run_desktop
 
     app.save_settings()
     # ``--no-tray`` only exists on the ``gui`` subparser, but gui is also the
