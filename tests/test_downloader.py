@@ -135,7 +135,7 @@ class TestManifestResume:
             fetched: list[str] = []
 
             class Rec(MockTransport):
-                async def request(self, method, url, *, headers=None, cookies=None):
+                async def request(self, method, url, *, headers=None, cookies=None, json_body=None):
                     fetched.append(url)
                     return TransportResponse(200, {}, b"IMGDATA" + url.encode()[-5:])
 
@@ -187,7 +187,7 @@ class TestManifestResume:
             active = {"n": 0, "max": 0}
 
             class Slow(MockTransport):
-                async def request(self, method, url, *, headers=None, cookies=None):
+                async def request(self, method, url, *, headers=None, cookies=None, json_body=None):
                     if url.endswith(".jpg"):
                         hosts.append(url.split("/")[2])
                         active["n"] += 1

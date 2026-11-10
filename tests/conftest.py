@@ -142,6 +142,7 @@ class MockTransport(Transport):
                 )
         self.default = default
         self.requests: list[str] = []
+        self.calls: list[dict] = []
 
     def add_json(self, url: str, payload: dict) -> None:
         self.routes[url] = TransportResponse(
@@ -154,8 +155,9 @@ class MockTransport(Transport):
             status=403, headers={"cf-mitigated": "challenge"}, content=CHALLENGE_BODY
         )
 
-    async def request(self, method, url, *, headers=None, cookies=None) -> TransportResponse:
+    async def request(self, method, url, *, headers=None, cookies=None, json_body=None) -> TransportResponse:
         self.requests.append(url)
+        self.calls.append({"method": method, "url": url, "json": json_body})
         if url in self.routes:
             hit = self.routes[url]
             if isinstance(hit, Exception):

@@ -56,6 +56,7 @@ class Transport:
         *,
         headers: Mapping[str, str] | None = None,
         cookies: Mapping[str, str] | None = None,
+        json_body: Mapping[str, object] | None = None,
     ) -> TransportResponse:  # pragma: no cover - interface
         raise NotImplementedError
 
@@ -80,13 +81,16 @@ class CurlCffiTransport(Transport):
             )
         return self._session
 
-    async def request(self, method, url, *, headers=None, cookies=None) -> TransportResponse:
+    async def request(
+        self, method, url, *, headers=None, cookies=None, json_body=None
+    ) -> TransportResponse:
         session = self._ensure_session()
         resp = await session.request(
             method,
             url,
             headers=dict(headers) if headers else None,
             cookies=dict(cookies) if cookies else None,
+            json=dict(json_body) if json_body is not None else None,
             impersonate="chrome",
             proxy=self.settings.proxy or None,
             timeout=self.settings.request_timeout,
@@ -116,7 +120,9 @@ class HttpxTransport(Transport):
             follow_redirects=True,
         )
 
-    async def request(self, method, url, *, headers=None, cookies=None) -> TransportResponse:
+    async def request(
+        self, method, url, *, headers=None, cookies=None, json_body=None
+    ) -> TransportResponse:
         # httpx doesn't do TLS impersonation; emulate a browser header set so
         # we at least look like one to naive filters.
         hdrs = {
@@ -128,7 +134,7 @@ class HttpxTransport(Transport):
             hdrs.update(dict(headers))
         if cookies:
             hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
-        resp = await self._http.request(method, url, headers=hdrs)
+        resp = await self._http.request(method, url, headers=hdrs, json=json_body)
         return TransportResponse(
             status=resp.status_code,
             headers={str(k).lower(): str(v) for k, v in resp.headers.items()},

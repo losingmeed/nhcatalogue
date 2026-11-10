@@ -279,6 +279,41 @@ class TestTags:
         items = r.json()["items"]
         assert any(i["name"] == "someartist" and i["type"] == "artist" for i in items)
 
+    def test_live_tag_search(self, server):
+        # Browse tag picker searches nhentai live, so tags you have never saved
+        # (e.g. shotacon) are discoverable.
+        tc, app, transport = server
+        transport.add_json(
+            "https://nhentai.net/api/v2/tags/search",
+            make_tags_raw([{"id": 9, "name": "shotacon", "type": "tag", "count": 68813}]),
+        )
+        r = tc.get("/api/tags/search", params={"q": "shota"}, headers=H(app))
+        body = r.json()
+        assert body["source"] == "live"
+        assert body["items"] == [
+            {
+                "id": 9,
+                "name": "shotacon",
+                "type": "general",
+                "count": 68813,
+                "gallery_count": 0,
+            }
+        ]
+        call = transport.calls[-1]
+        assert call["method"] == "POST"
+        assert call["json"]["query"] == "shota"
+
+    def test_live_tag_search_falls_back_to_local(self, server):
+        tc, app, transport = server
+        tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))
+        transport.routes["https://nhentai.net/api/v2/tags/search"] = TransportResponse(
+            500, {}, b""
+        )
+        r = tc.get("/api/tags/search", params={"q": "full"}, headers=H(app))
+        body = r.json()
+        assert body["source"] == "local"
+        assert any(i["name"] == "full color" for i in body["items"])
+
     def test_tag_groups(self, server):
         tc, app, _ = server
         tc.post("/api/catalogue", json={"id": 101, "persist": True}, headers=H(app))

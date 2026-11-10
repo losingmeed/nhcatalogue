@@ -197,6 +197,33 @@ class TestNhentaiClient:
             "https://nhentai.net/api/v2/search?query=artist%3Ami+language%3Aenglish&page=1"
         ]
 
+    async def test_search_tags_posts_query(self):
+        t = MockTransport()
+        t.add_json(
+            "https://nhentai.net/api/v2/tags/search",
+            make_tags_raw([{"id": 9, "name": "shotacon", "type": "tag", "count": 68813}]),
+        )
+        c = client_with(t)
+        tags = await c.search_tags("shota", limit=10)
+        # API "tag" type is normalized to the app's "general"
+        assert [(x.name, x.type, x.count) for x in tags] == [("shotacon", "general", 68813)]
+        assert t.calls == [
+            {
+                "method": "POST",
+                "url": "https://nhentai.net/api/v2/tags/search",
+                "json": {"query": "shota", "limit": 10},
+            }
+        ]
+
+    async def test_search_tags_type_and_limit_mapping(self):
+        t = MockTransport()
+        t.add_json("https://nhentai.net/api/v2/tags/search", [])
+        c = client_with(t)
+        await c.search_tags("", type_="general", limit=99)
+        # empty query is sent as null; site type for general tags is "tag";
+        # the endpoint caps limit at 50
+        assert t.calls[0]["json"] == {"query": None, "limit": 50, "type": "tag"}
+
     async def test_empty_query_uses_all_galleries(self):
         t = MockTransport()
         t.add_json("https://nhentai.net/api/v2/galleries?page=2", make_search_raw([]))
@@ -269,7 +296,7 @@ class TestNhentaiClient:
         sent: dict = {}
 
         class Recorder(MockTransport):
-            async def request(self, method, url, *, headers=None, cookies=None):
+            async def request(self, method, url, *, headers=None, cookies=None, json_body=None):
                 sent["headers"] = dict(headers or {})
                 sent["cookies"] = dict(cookies or {})
                 return await super().request(method, url, headers=headers, cookies=cookies)
@@ -352,7 +379,7 @@ class TestNhentaiClient:
                 super().__init__()
                 self.hits = 0
 
-            async def request(self, method, url, *, headers=None, cookies=None):
+            async def request(self, method, url, *, headers=None, cookies=None, json_body=None):
                 self.hits += 1
                 self.requests.append(url)
                 if self.hits == 1:
@@ -399,7 +426,7 @@ class TestNhentaiClient:
                 super().__init__()
                 self.flip = False
 
-            async def request(self, method, url, *, headers=None, cookies=None):
+            async def request(self, method, url, *, headers=None, cookies=None, json_body=None):
                 if self.flip:
                     self.requests.append(url)
                     return TransportResponse(

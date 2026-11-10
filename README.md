@@ -8,7 +8,7 @@ A **local catalogue, browser and downloader for [nhentai.net](https://nhentai.ne
 
 ## What it does
 
-- **Browse** the live site through the app (full query syntax: `artist:`, `tag:`, `parody:`, `character:`, `group:`, `language:`, `category:`, `-tag` exclusions, quoted phrases), with a **multi-select tag picker** (search/filter the list, select several tags, blacklist tags) and remembered selections.
+- **Browse** the live site through the app (full query syntax: `artist:`, `tag:`, `parody:`, `character:`, `group:`, `language:`, `category:`, `-tag` exclusions, quoted phrases), with a **live multi-select tag picker** (search nhentai's tag list, select several tags, blacklist tags) and remembered selections.
 - **Catalogue** — preview any gallery instantly (metadata + cover streamed, pages kept in a short-lived preview cache), then save it permanently by adding it to a collection or downloading it. Saved galleries keep metadata + cover locally so the grid works offline, and can be favorited, rated, noted and organized into collections.
 - **Download** into a templated folder library — `library/<artist>/<id> - <title>/001.jpg …` + `cover.jpg` + Houdoku-compatible `metadata.json` — resumable, deduped, import-friendly.
 - **Read** — single/double-page, long-strip, RTL toggle, keyboard nav, preloading, remembers your position. Streams pages through the backend proxy (preview pages are cached briefly and promoted when you save) or reads from disk.
@@ -111,16 +111,16 @@ the permanent cache or their downloaded folder.
 ## Tag search (headline feature)
 
 - Tag names are **normalized** (`full color` / `full-color` / `full_color` all match) — stored with a `name_norm` column, indexed for type-ahead.
-- **Tag picker** in Browse: browse/filter all catalogue tags, multi-select them (ANDed into the live query), and blacklist tags with `−`/double-click. Multi-word names are quoted automatically (`general:"full color"`), and selections/blacklists are remembered between sessions.
+- **Tag picker** in Browse: search **nhentai's live tag list** as you type (empty search shows the most popular tags, so it doubles as a discovery tool), multi-select them (ANDed into the live query), and blacklist tags with `−`/double-click. Multi-word names are quoted automatically (`tag:"full color"`), selections/blacklists are remembered between sessions, and the picker falls back to local tags if the site is unreachable.
 - **Tags browser** view: all tags grouped by type (Artist / Parody / Character / Group / Language / Category / General) with your gallery counts, type-ahead filter, multi-select → gallery grid.
 - **Faceted filtering** in the Library: `+` include / `−` exclude pills per tag, shown as removable chips; facets reflect the current result set.
 - FTS5 over **titles + tag names** for instant local search.
-- API: `/api/tags?q=&type=`, `/api/tags/facets`, `/api/tags/groups`, `/api/tags/{id}/galleries`, `/api/tags/suggest`.
+- API: `/api/tags?q=&type=`, `/api/tags/search`, `/api/tags/facets`, `/api/tags/groups`, `/api/tags/{id}/galleries`, `/api/tags/suggest`.
 
 ## Development
 
 ```bash
-pytest            # 133 tests — all mocked, zero network calls
+pytest            # 137 tests — all mocked, zero network calls
 ruff check src tests   # if installed
 cd ui-src && npm run dev   # Vite dev server (proxies /api to :8787)
 ```

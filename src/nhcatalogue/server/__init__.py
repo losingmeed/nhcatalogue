@@ -128,6 +128,7 @@ def create_app(app: App) -> FastAPI:
     detail_cache = LiveCache(maxsize=256, ttl=600)  # live Gallery objects
     reader_cache = LiveCache(maxsize=256, ttl=600)  # parsed pages/folder state
     search_cache = LiveCache(maxsize=1024, ttl=600)  # lightweight search results
+    tag_search_cache = LiveCache(maxsize=512, ttl=900)  # live tag autocomplete
     # Big Pickle Phase 2: galleries opened/previewed in this server session but
     # not written to the library. The UI marks them as "in catalogue" so the
     # reader works, while the permanent library stays clean.
@@ -541,6 +542,55 @@ def create_app(app: App) -> FastAPI:
         counts, ordered by count — powers Tags browser + autocomplete."""
         res = await app.db.tag_search(q=q, type_=type, limit=limit, offset=offset)
         return res
+
+    @api.get("/api/tags/search", dependencies=[GUARD])
+    async def api_tags_search(
+        q: str = "",
+        type: str = "",
+        limit: int = Query(50, ge=1, le=50),
+    ) -> dict:
+        """Live nhentai tag search for the Browse picker.
+
+        An empty ``q`` returns the site's most popular tags, so you can
+        discover tags before saving anything locally. Results are cached; if
+        the network is unavailable we fall back to tags already in the local
+        catalogue so the picker keeps working offline.
+        """
+        key = f"tagsearch:{type}:{q.strip().lower()}:{limit}"
+        cached = tag_search_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            tags = await app.client.search_tags(q, type_=type, limit=limit)
+        except Exception as e:
+            log.debug("live tag search failed (%s); using local tags", e)
+            res = await app.db.tag_search(q=q, type_=type, limit=limit)
+            items = [
+                {
+                    "id": t["id"],
+                    "name": t["name"],
+                    "type": t["type"],
+                    "count": t.get("api_count", 0) or 0,
+                    "gallery_count": t.get("gallery_count", 0) or 0,
+                }
+                for t in res["items"]
+            ]
+            return {"items": items, "source": "local", "error": str(e)}
+        payload = {
+            "items": [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "type": t.type,
+                    "count": t.count,
+                    "gallery_count": 0,
+                }
+                for t in tags
+            ],
+            "source": "live",
+        }
+        tag_search_cache.put(key, payload)
+        return payload
 
     @api.get("/api/tags/facets", dependencies=[GUARD])
     async def api_tag_facets(

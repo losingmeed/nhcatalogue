@@ -41,7 +41,7 @@ from ..config import (
 from .challenge import looks_like_challenge
 from .domains import DomainRotator
 from .errors import BlockedError, NotFoundError, RateLimitedError
-from .models import Gallery, SearchResult, Tag
+from .models import Gallery, SearchResult, Tag, normalize_type
 from .ratelimit import RateLimiter
 from .transport import FlareSolverrSession, Transport, TransportResponse, build_transport
 
@@ -56,6 +56,7 @@ ALL_GALLERIES_PATH = "/api/v2/galleries"
 GALLERY_PATH = "/api/v2/galleries/{id}"
 TAGGED_PATH = "/api/v2/galleries/tagged"
 TAGS_BY_IDS_PATH = "/api/v2/tags/ids"
+SEARCH_TAGS_PATH = "/api/v2/tags/search"
 CONFIG_PATH = "/api/v2/config"
 TAG_CHUNK = 50
 
@@ -132,17 +133,23 @@ class NhentaiClient:
     # ------------------------------------------------------- strategy chain
 
     async def _send(
-        self, url: str, *, headers: dict[str, str] | None = None
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        method: str = "GET",
+        json_body: Mapping[str, Any] | None = None,
     ) -> TransportResponse:
         """Send a single request with rate limiting (no retries)."""
         host = self._host(url)
         await self.limiter.acquire(host)
         try:
             return await self.transport.request(
-                "GET",
+                method,
                 url,
                 headers=headers or self._base_headers(),
                 cookies=self._cookies(),
+                json_body=json_body,
             )
         finally:
             self.limiter.release(host)
@@ -170,9 +177,17 @@ class NhentaiClient:
         return bool(self._runtime_cookies)
 
     async def _request_json(
-        self, path: str, params: Mapping[str, Any] | None = None
+        self,
+        path: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        json_body: Mapping[str, Any] | None = None,
     ) -> Any:
-        """GET a JSON API path through the full strategy chain.
+        """Request a JSON API path through the full strategy chain.
+
+        ``method``/``json_body`` allow POST endpoints (e.g. live tag search);
+        the chain itself is identical for GET and POST.
 
         Chain: for each domain in rotation order → request → on challenge/block,
         escalate to the next domain; once all domains are exhausted, try
@@ -191,11 +206,13 @@ class NhentaiClient:
         for attempt, round_ in enumerate(("first", "flaresolverr")):
             for domain in self.rotator.order():
                 url = f"https://{domain}{path}{qs}"
-                strategies_tried.append(f"GET {url}")
+                strategies_tried.append(f"{method} {url}")
                 backoff = 0.5
                 for _retry in range(max(1, self.settings.max_retries)):
                     try:
-                        resp = await self._send(url)
+                        resp = await self._send(
+                            url, method=method, json_body=json_body
+                        )
                     except (TimeoutError, OSError) as e:
                         # network/timeout: backoff then retry same domain
                         last_exc = e
@@ -422,6 +439,31 @@ class NhentaiClient:
         result = SearchResult.from_api(raw, page)
         await self._resolve_tags(result.galleries)
         return result
+
+    async def search_tags(
+        self, query: str = "", type_: str = "", limit: int = 10
+    ) -> list[Tag]:
+        """Live tag search/autocomplete (``POST /api/v2/tags/search``).
+
+        An empty query returns the most popular tags, which makes the Browse
+        picker useful for discovering tags before you have a local library.
+        The site calls general tags type ``tag``; results are normalized to
+        the app's ``general`` type.
+        """
+        body: dict[str, Any] = {
+            "query": query or None,
+            "limit": max(1, min(int(limit), 50)),
+        }
+        if type_:
+            normalized = normalize_type(type_)
+            body["type"] = "tag" if normalized == "general" else normalized
+        raw = await self._request_json(
+            SEARCH_TAGS_PATH, method="POST", json_body=body
+        )
+        tags = [Tag.from_api(item) for item in raw] if isinstance(raw, list) else []
+        for tag in tags:
+            self._tag_cache[tag.id] = tag
+        return tags
 
     async def test_connection(self) -> dict:
         """Settings → 'Test connection' button. Returns a status dict."""

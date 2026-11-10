@@ -34,7 +34,9 @@ function splitTokens(q) {
 
 function tokenFor(tag, exclude = false) {
   const name = /[\s"]/.test(tag.name) ? `"${tag.name.replace(/"/g, '\\"')}"` : tag.name;
-  return `${exclude ? "-" : ""}${tag.type}:${name}`;
+  // nhentai calls general tags "tag:" in the query syntax
+  const type = tag.type === "general" ? "tag" : tag.type;
+  return `${exclude ? "-" : ""}${type}:${name}`;
 }
 
 function parseTagToken(tok) {
@@ -45,7 +47,8 @@ function parseTagToken(tok) {
     name = name.slice(1, -1).replace(/\\"/g, '"');
   }
   if (!name) return null;
-  return { type: m[2].toLowerCase(), name, exclude: m[1] === "-" };
+  const type = m[2].toLowerCase();
+  return { type: type === "tag" ? "general" : type, name, exclude: m[1] === "-" };
 }
 
 const sameTag = (a, b) => a.type === b.type && a.name === b.name;
