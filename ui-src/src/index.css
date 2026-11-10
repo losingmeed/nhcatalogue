@@ -205,6 +205,10 @@ input[type="color"]::-webkit-color-swatch {
 .btn {
   @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors;
 }
+.btn:hover:not(:disabled) {
+  /* Big Pickle Phase 5: hover glow on buttons only. */
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
 .btn-primary {
   @apply bg-indigo-600 text-white hover:bg-indigo-500;
 }
