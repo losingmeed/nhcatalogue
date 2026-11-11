@@ -150,6 +150,16 @@ class MockTransport(Transport):
             content=json.dumps(payload).encode(),
         )
 
+    def add_text(self, url: str, body: str, content_type: str = "text/xml") -> None:
+        """Register a plain-text (e.g. XML) response."""
+        self.routes[url] = TransportResponse(
+            status=200, headers={"content-type": content_type}, content=body.encode()
+        )
+
+    def add_empty(self, url: str, status: int = 200) -> None:
+        """Register an empty-body response (what a throttled API returns)."""
+        self.routes[url] = TransportResponse(status=status, headers={}, content=b"")
+
     def add_challenge(self, url: str) -> None:
         self.routes[url] = TransportResponse(
             status=403, headers={"cf-mitigated": "challenge"}, content=CHALLENGE_BODY

@@ -63,6 +63,12 @@ class Settings:
     rule34_api_host: str = "api.rule34.xxx"  # rule 34 API host (separate)
     rule34_user_id: str = ""  # rule 34 account id (required by the API)
     rule34_api_key: str = ""  # rule 34 API key (required by the API)
+    # The rule34 dapi is a separate host with its own limits, so it gets its
+    # own request rate rather than sharing the nhentai CDN setting.
+    rule34_rate_limit_rps: float = 2.0  # requests per second to the rule34 API
+    # The tag endpoint is cheap and tolerates parallel requests, so it is
+    # paced separately to keep the tag picker responsive.
+    rule34_tag_lookup_rps: float = 10.0  # requests per second to the tag endpoint
 
     # --- politeness --------------------------------------------------------------
     # Fast preset by default: 4 req/s per CDN host, ~16 req/s aggregate across
@@ -119,6 +125,14 @@ class Settings:
                 errors.append("proxy: must be an http://, https:// or socks5:// URL")
         if self.rate_limit_rps <= 0 or self.rate_limit_rps > 10:
             errors.append("rate_limit_rps: must be between 0 and 10 requests/sec")
+        if self.rule34_rate_limit_rps <= 0 or self.rule34_rate_limit_rps > 5:
+            errors.append(
+                "rule34_rate_limit_rps: must be between 0 and 5 requests/sec"
+            )
+        if self.rule34_tag_lookup_rps <= 0 or self.rule34_tag_lookup_rps > 20:
+            errors.append(
+                "rule34_tag_lookup_rps: must be between 0 and 20 requests/sec"
+            )
         if not 1 <= self.host_concurrency <= 16:
             errors.append("host_concurrency: must be between 1 and 16")
         if not 1 <= self.download_workers <= 10:

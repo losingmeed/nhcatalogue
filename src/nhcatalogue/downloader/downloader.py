@@ -432,7 +432,14 @@ def gallery_from_dict(d: dict[str, Any]) -> Gallery:
         g.media_kind = str(data.get("media_kind") or "image")
         g.file_size = int(data.get("file_size") or 0)
         g.tags = [
-            Tag(id=t["id"], name=t["name"], type=t["type"], count=t.get("count", 0), url=t.get("url"))
+            Tag(
+                id=t["id"],
+                name=t["name"],
+                type=t["type"],
+                count=t.get("count", 0),
+                url=t.get("url"),
+                source=g.source,
+            )
             for t in (d.get("tags") or [])
         ]
         if not g.pages and d.get("num_pages"):
@@ -448,7 +455,13 @@ def gallery_from_dict(d: dict[str, Any]) -> Gallery:
         source=str(d.get("source") or "nhentai"),
     )
     g.tags = [
-        Tag(id=t["id"], name=t["name"], type=t["type"], count=t.get("count", 0))
+        Tag(
+            id=t["id"],
+            name=t["name"],
+            type=t["type"],
+            count=t.get("count", 0),
+            source=g.source,
+        )
         for t in (d.get("tags") or [])
     ]
     if not g.pages and g.num_pages:

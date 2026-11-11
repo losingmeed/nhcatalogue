@@ -58,7 +58,7 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         g = await app.source_client("rule34").gallery(gallery_id)
         return g, None
 
-    def _describe(g, row: dict | None) -> dict[str, Any]:
+    async def _describe(g, row: dict | None) -> dict[str, Any]:
         pages = [
             {
                 "n": p.number,
@@ -72,6 +72,11 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         size = int(getattr(g, "file_size", 0) or 0)
         if row:
             size = size or int(row.get("file_size") or 0)
+        if not size and g.pages:
+            # The dapi does not report file sizes; ask the CDN for them so
+            # the large-download warning can still fire.
+            client = app.source_client("rule34")
+            size = await client.media_size(g.pages[0].path)
         return {
             "id": g.id,
             "post_id": decode_id(g.id),
@@ -97,7 +102,7 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
             g, row = await _resolve(gallery_id)
         except Exception as e:
             raise HTTPException(502, f"{e.__class__.__name__}: {e}") from e
-        return _describe(g, row)
+        return await _describe(g, row)
 
     @router.get("/api/rule34/media/{gallery_id}", dependencies=[media_guard])
     async def api_rule34_media(
@@ -117,11 +122,9 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         if not url:
             raise HTTPException(404, "no media url")
         client = app.source_client("rule34")
-        headers = client._headers()
+        headers = client._cdn_headers()
         headers["Range"] = range_header if range_header else "bytes=0-"
-        resp = await client.transport.request(
-            "GET", url, headers=headers, cookies=client._cookies()
-        )
+        resp = await client.transport.request("GET", url, headers=headers)
         if resp.status not in (200, 206):
             raise HTTPException(502, f"rule34 media: HTTP {resp.status}")
         ctype = (
@@ -158,9 +161,7 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         if not url:
             raise HTTPException(404, "no cover")
         client = app.source_client("rule34")
-        resp = await client.transport.request(
-            "GET", url, headers=client._headers(), cookies=client._cookies()
-        )
+        resp = await client.transport.request("GET", url, headers=client._cdn_headers())
         if resp.status != 200 or not resp.content:
             raise HTTPException(502, f"rule34 cover: HTTP {resp.status}")
         ctype = (

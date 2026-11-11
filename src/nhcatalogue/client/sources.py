@@ -43,7 +43,6 @@ RULE34 = SourceSpec(
         "artist",
         "copyright",
         "character",
-        "series",
         "other",
     ),
 )

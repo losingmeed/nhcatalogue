@@ -26,29 +26,41 @@ function splitTokens(q) {
   return out;
 }
 
+// Rule 34's API matches plain tag names only — a "namespace:" prefix makes
+// the token unmatchable. Each tag name belongs to exactly one namespace, so
+// the plain name is unambiguous; the type is kept for display only.
 function tokenFor(tag, exclude = false) {
   const name = /[\s"]/.test(tag.name) ? `"${tag.name.replace(/"/g, '\\"')}"` : tag.name;
-  const type = tag.type === "general" ? "general" : tag.type;
-  return `${exclude ? "-" : ""}${type}:${name}`;
+  return `${exclude ? "-" : ""}${name}`;
 }
 
 function parseTagToken(tok) {
-  const m = (tok || "").match(/^(-?)([A-Za-z]+):(.+)$/);
-  if (!m) return null;
-  let name = m[3];
-  if (name.startsWith('"') && name.endsWith('"')) {
-    name = name.slice(1, -1).replace(/\\"/g, '"');
+  let body = tok || "";
+  const exclude = body.startsWith("-");
+  if (exclude) body = body.slice(1);
+  // Tolerate a namespace prefix in a query typed by hand.
+  const prefix = body.match(/^([A-Za-z]+):(.+)$/);
+  if (
+    prefix &&
+    ["general", "artist", "copyright", "character", "series", "metadata", "other", "tag"].includes(
+      prefix[1].toLowerCase()
+    )
+  ) {
+    body = prefix[2];
   }
-  if (!name) return null;
-  return { type: m[2].toLowerCase(), name, exclude: m[1] === "-" };
+  if (body.startsWith('"') && body.endsWith('"')) {
+    body = body.slice(1, -1).replace(/\\"/g, '"');
+  }
+  if (!body) return null;
+  return { type: "general", name: body, exclude };
 }
 
-const sameTag = (a, b) => a.type === b.type && a.name === b.name;
+const sameTag = (a, b) => a.name === b.name;
 
 function dedupeTags(tags) {
   const seen = new Set();
   return tags.filter((t) => {
-    const k = `${t.type}:${t.name}`;
+    const k = t.name;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -64,8 +76,8 @@ function tagsFromQuery(q) {
 }
 
 function isTagToken(tok, tag) {
-  const body = tok.startsWith("-") ? tok.slice(1) : tok;
-  return body === `${tag.type}:${tag.name}` || body === tokenFor(tag);
+  const parsed = parseTagToken(tok);
+  return parsed ? parsed.name === tag.name : false;
 }
 
 function readStored(key) {
@@ -213,7 +225,7 @@ export default function Rule34Browse() {
         <div className="relative min-w-[320px] flex-1">
           <input
             className="w-full"
-            placeholder='rule34 — e.g. artist:somebody "long tag" -rating:safe'
+            placeholder='rule34 — e.g. 1girl solo "long tag" -anal'
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

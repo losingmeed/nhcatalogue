@@ -26,35 +26,51 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "nhcatalogue" / "db" 
 def make_post_raw(
     post_id: int = 555,
     *,
-    ext: str = ".jpg",
-    size: int = 123456,
+    ext: str = ".jpeg",
     url: str | None = None,
-    tags: dict | str | None = None,
+    tags: str | None = None,
+    tag_info: list | None = None,
 ) -> dict:
-    """The real dapi post shape: flat fields, values as strings."""
+    """The real dapi JSON post shape (verified against the live API).
+
+    Flat fields, numeric values as numbers, and the media on the
+    ``api-cdn.rule34.xxx`` host.
+    """
     if tags is None:
-        tags = "artist:someartist cat solo"
+        tags = "1girl solo smile"
+    if tag_info is None:
+        tag_info = [
+            {"count": 3303757, "type": "tag", "tag": "1girl"},
+            {"count": 12, "type": "artist", "tag": "someartist"},
+            {"count": 5, "type": "character", "tag": "somechar"},
+        ]
     return {
         "id": post_id,
         "tags": tags,
-        "file_url": url or f"https://rule34.xxx/image/{post_id}/file{ext}",
-        "created_at": "Wed Oct 22 09:14:33 +0000 2025",
-        "rating": "s",
-        "type": "0",
-        "author": "1",
-        "status": "active",
-        "parent_id": "0",
-        "has_children": "no",
-        "rating_score": "0",
+        "tag_info": tag_info,
+        "file_url": url
+        or f"https://api-cdn.rule34.xxx/images/3538/{post_id:08x}{ext}",
+        "preview_url": f"https://api-cdn.rule34.xxx/thumbnails/3538/thumb_{post_id:08x}.jpg",
+        "sample_url": f"https://api-cdn.rule34.xxx/samples/3538/sample_{post_id:08x}.jpg",
+        "directory": 3538,
+        "image": f"{post_id:08x}.jpeg",
+        "hash": f"{post_id:08x}",
+        "width": 1280,
+        "height": 1808,
+        "sample": True,
+        "sample_width": 850,
+        "sample_height": 922,
+        "change": 1794402370,
+        "created_at": None,
+        "source": "https://example.invalid/art",
+        "owner": "somebody",
         "creator_id": "42",
-        "creator_name": "someone",
-        "sample_url": f"https://rule34.xxx/samples/{post_id}/sample.jpg",
-        "preview_url": f"https://rule34.xxx/preview/{post_id}/prev.jpg",
-        "width": "1280",
-        "height": "1808",
-        "source": "some source",
-        "file_size": str(size),
-        "file_hash": "abcdef",
+        "rating": "explicit",
+        "status": "active",
+        "parent_id": 0,
+        "score": 2,
+        "comment_count": 0,
+        "has_notes": False,
     }
 
 
@@ -72,6 +88,14 @@ def api_url(path: str, **params) -> str:
     return url + ("&" if "?" in url else "?") + urlencode(query)
 
 
+def ac_url(q: str) -> str:
+    """Autocomplete URL — the empty query is meaningful and is kept."""
+    from urllib.parse import urlencode
+
+    query = {"q": q, "api_key": "secret", "user_id": "1234"}
+    return f"{API}/autocomplete.php?" + urlencode(query)
+
+
 def search_url(query: str = "", page: int = 1) -> str:
     return api_url(
         "/index.php?page=dapi&s=post&q=index",
@@ -84,7 +108,9 @@ def search_url(query: str = "", page: int = 1) -> str:
 
 
 def post_url(post_id: int) -> str:
-    return api_url("/index.php?page=dapi&s=post&q=index", json=1, id=post_id)
+    return api_url(
+        "/index.php?page=dapi&s=post&q=index", json=1, id=post_id, fields="tag_info"
+    )
 
 
 def H(app: App) -> dict:
@@ -100,19 +126,36 @@ def rule34_server(tmp_path):
     app.settings.rule34_user_id = "1234"
     app.settings.rule34_api_key = "secret"
     transport = MockTransport()
-    transport.add_json(search_url(), [make_post_raw(555), make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024)])
+    transport.add_json(search_url(), [make_post_raw(555), make_post_raw(556, ext=".mp4")])
     transport.add_json(post_url(555), make_post_raw(555))
-    transport.add_json(post_url(556), make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024))
+    transport.add_json(post_url(556), make_post_raw(556, ext=".mp4"))
     transport.add_json(
         "https://nhentai.net/api/v2/galleries?page=1",
         {"result": [], "num_pages": 1, "per_page": 25, "total": 0},
     )
+    # the autocomplete endpoint answers [{"label": "name (count)", "value": "name"}]
     transport.add_json(
-        api_url("/index.php?page=dapi&s=tag&q=index", json=1, limit=50),
-        [{"id": 1, "name": "cat", "type": "general", "count": 900}],
+        ac_url(""),
+        [
+            {"label": "female (10623105)", "value": "female"},
+            {"label": "breasts (8714477)", "value": "breasts"},
+        ],
     )
     transport.add_json(
-        api_url("/autocomplete.php", q="ca"), ["cat", "cathedral"]
+        ac_url("ca"),
+        [
+            {"label": "cat (900)", "value": "cat"},
+            {"label": "cathedral (870)", "value": "cathedral"},
+        ],
+    )
+    # the tag endpoint answers an exact-name lookup with the namespace code
+    transport.add_text(
+        api_url("/index.php?page=dapi&s=tag&q=index", name="cat"),
+        '<tags type="array"><tag type="0" count="27829" name="cat" id="4514"/></tags>',
+    )
+    transport.add_text(
+        api_url("/index.php?page=dapi&s=tag&q=index", name="female"),
+        '<tags type="array"><tag type="0" count="10623105" name="female" id="99"/></tags>',
     )
     transport.default = TransportResponse(200, {}, b"IMG-BYTES")
     app._client = NhentaiClient(app.settings, transport=transport)
@@ -223,38 +266,35 @@ class TestRule34Client:
         assert g.media_id == "555"
         assert g.source == "rule34"
         assert g.media_kind == "image"
-        assert g.file_size == 123456
         assert g.num_pages == 1
-        # images are served from the wimg host
-        assert g.pages[0].path == "https://wimg.xxx/image/555/file.jpg"
-        assert g.pages[0].ext == "jpg"
+        # the media url is used verbatim: the api already points at the
+        # right cdn host, and rewriting it to wimg.* would 403
+        assert g.pages[0].path == "https://api-cdn.rule34.xxx/images/3538/0000022b.jpeg"
+        assert g.pages[0].ext == "jpeg"
         assert g.pages[0].width == 1280
         assert g.pages[0].height == 1808
-        names = {t.name for t in g.tags}
-        assert names == {"someartist", "cat", "solo"}
+        # the cover is the small thumbnail
+        assert g.cover_path.endswith("thumb_0000022b.jpg")        # tag_info supplies the namespace and the post count
         types = {t.name: t.type for t in g.tags}
         assert types["someartist"] == "artist"
-        assert types["cat"] == "general"
-        # the rule34 date format is parsed
-        assert g.upload_date > 0
+        assert types["somechar"] == "character"
+        assert types["1girl"] == "general"
+        counts = {t.name: t.count for t in g.tags}
+        assert counts["1girl"] == 3303757
+        # the rule34 date format is parsed (from "change")
+        assert g.upload_date == 1794402370
+        assert g.scanlator == "somebody"
 
     def test_video_detected(self):
         from nhcatalogue.client.rule34 import Rule34Client
         from nhcatalogue.config import Settings
 
         client = Rule34Client(Settings(), MockTransport())
-        g = client._post_to_gallery(make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024))
+        g = client._post_to_gallery(
+            make_post_raw(556, url="https://api-cdn-mp4.rule34.xxx/images/3538/a.mp4")
+        )
         assert g.media_kind == "video"
         assert g.pages[0].ext == "mp4"
-        assert g.file_size == 50 * 1024 * 1024
-
-    def test_cdn_url_rewrites_image_host(self):
-        from nhcatalogue.client.rule34 import cdn_url
-
-        assert cdn_url("https://rule34.xxx/image/1/a.jpg") == "https://wimg.xxx/image/1/a.jpg"
-        # already rewritten / api hosts are left alone
-        assert cdn_url("https://wimg.xxx/image/1/a.jpg") == "https://wimg.xxx/image/1/a.jpg"
-        assert cdn_url("https://api.rule34.xxx/x") == "https://api.rule34.xxx/x"
 
     def test_auth_travels_as_query_params(self):
         from nhcatalogue.client.rule34 import Rule34Client
@@ -273,9 +313,85 @@ class TestRule34Client:
         from nhcatalogue.config import Settings
 
         client = Rule34Client(Settings(), MockTransport())
-        g = client._post_to_gallery(make_post_raw(555, tags="cat solo"))
+        g = client._post_to_gallery(
+            make_post_raw(555, tags="cat solo", tag_info=[])
+        )
         assert {t.name for t in g.tags} == {"cat", "solo"}
         assert all(t.type == "general" for t in g.tags)
+
+    def test_tag_info_names_use_tag_key(self):
+        from nhcatalogue.client.rule34 import _parse_tags
+
+        tags = _parse_tags([{"count": 5, "type": "artist", "tag": "someartist"}])
+        assert [t.name for t in tags] == ["someartist"]
+        assert tags[0].type == "artist"
+        assert tags[0].count == 5
+
+    def test_tag_xml_namespace_codes(self):
+        from nhcatalogue.client.rule34 import _parse_xml_tags
+
+        xml = (
+            '<tags type="array">'
+            '<tag type="1" count="900" name="cat" id="1"/>'
+            '<tag type="0" count="500" name="solo" id="2"/>'
+            '<tag type="4" count="7" name="somechar" id="3"/>'
+            '<tag type="3" count="8" name="somecopyright" id="4"/>'
+            '<tag type="5" count="9" name="ai_generated" id="5"/>'
+            "</tags>"
+        )
+        tags = {t.name: t for t in _parse_xml_tags(xml)}
+        assert tags["cat"].type == "artist"
+        assert tags["solo"].type == "general"
+        assert tags["somechar"].type == "character"
+        assert tags["somecopyright"].type == "copyright"
+        assert tags["ai_generated"].type == "metadata"
+        assert tags["cat"].count == 900
+
+    def test_tag_info_metadata_becomes_other(self):
+        """rule34's "metadata" namespace must not fold into "general"."""
+        from nhcatalogue.client.rule34 import Rule34Client
+        from nhcatalogue.config import Settings
+
+        client = Rule34Client(Settings(), MockTransport())
+        g = client._post_to_gallery(
+            make_post_raw(
+                555,
+                tag_info=[
+                    {"count": 10, "type": "tag", "tag": "1girl"},
+                    {"count": 20, "type": "metadata", "tag": "ai_generated"},
+                    {"count": 30, "type": "artist", "tag": "someartist"},
+                ],
+            )
+        )
+        types = {t.name: t.type for t in g.tags}
+        assert types["1girl"] == "general"
+        assert types["ai_generated"] == "other"
+        assert types["someartist"] == "artist"
+
+    def test_tag_query_drops_namespace_prefixes(self):
+        """The dapi matches plain tag names; a prefix makes it unmatchable."""
+        from nhcatalogue.client.rule34 import normalize_tag_query
+
+        assert normalize_tag_query("artist:foo") == "foo"
+        assert normalize_tag_query("general:1girl") == "1girl"
+        assert normalize_tag_query("-artist:foo") == "-foo"
+        assert normalize_tag_query("1girl solo") == "1girl solo"
+        assert normalize_tag_query('"long tag"') == "long tag"
+        # an unknown prefix is left alone (it may be part of the tag name)
+        assert normalize_tag_query("weird:thing") == "weird:thing"
+        assert normalize_tag_query("") == ""
+
+    def test_search_sends_plain_tag_names(self, rule34_server):
+        tc, app, transport = rule34_server
+        tc.get(
+            "/api/search",
+            params={"q": "artist:cat solo", "source": "rule34"},
+            headers=H(app),
+        )
+        sent = [u for u in transport.requests if "tags=" in u]
+        assert sent, "no tag query was sent"
+        assert "tags=cat+solo" in sent[0]
+        assert "artist%3A" not in sent[0]
 
     def test_source_registry(self):
         assert set(SOURCES) == {"nhentai", "rule34"}
@@ -283,6 +399,49 @@ class TestRule34Client:
         assert get_source("rule34").has_video is True
         assert get_source("nhentai").is_comic is True
         assert get_source("nonsense").name == "nhentai"
+
+
+class TestRule34EmptyResults:
+    """The dapi answers a query that matches nothing with an empty body.
+
+    That is a valid empty result set, not an error — treating it as a
+    failure turned every no-match search into a bogus "rate limited" error.
+    """
+
+    def test_empty_body_is_an_empty_result_set(self, tmp_path):
+        import asyncio
+
+        from nhcatalogue.client.rule34 import Rule34Client
+        from nhcatalogue.config import Settings
+
+        transport = MockTransport()
+        transport.add_empty(search_url("zzzznotarealtag"))
+        s = Settings()
+        s.rule34_user_id = "1234"
+        s.rule34_api_key = "secret"
+        s.rule34_rate_limit_rps = 1000
+        client = Rule34Client(s, transport)
+
+        result = asyncio.run(client.search("zzzznotarealtag"))
+        assert result.galleries == []
+
+    def test_empty_body_for_a_missing_post_is_not_found(self, tmp_path):
+        import asyncio
+
+        from nhcatalogue.client.errors import NotFoundError
+        from nhcatalogue.client.rule34 import Rule34Client
+        from nhcatalogue.config import Settings
+
+        transport = MockTransport()
+        transport.add_empty(post_url(99999999999))
+        s = Settings()
+        s.rule34_user_id = "1234"
+        s.rule34_api_key = "secret"
+        s.rule34_rate_limit_rps = 1000
+        client = Rule34Client(s, transport)
+
+        with pytest.raises(NotFoundError):
+            asyncio.run(client.post(99999999999))
 
 
 class TestRule34Routes:
@@ -340,15 +499,15 @@ class TestRule34Routes:
         body = r.json()
         assert body["post_id"] == 555
         assert body["kind"] == "image"
-        assert body["file_size"] == 123456
+        # the dapi does not report a file size, so the warning stays off
+        assert body["file_size"] == 0
         assert body["large_file"] is False
         assert body["large_file_threshold"] == 10 * 1024 * 1024
 
-    def test_large_file_flagged_over_threshold(self, rule34_server):
+    def test_video_kind_reported(self, rule34_server):
         tc, app, _ = rule34_server
         body = tc.get(f"/api/rule34/post/{encode_id(556)}", headers=H(app)).json()
         assert body["kind"] == "video"
-        assert body["large_file"] is True
 
     def test_media_served(self, rule34_server):
         tc, app, transport = rule34_server
@@ -373,7 +532,25 @@ class TestRule34Routes:
         body = r.json()
         assert body["provider"] == "rule34"
         assert body["source"] == "live"
-        assert any("s=tag" in u for u in transport.requests)
+        # the popular tags come from the autocomplete endpoint
+        assert any("autocomplete.php" in u for u in transport.requests)
+        names = {t["name"] for t in body["items"]}
+        assert "female" in names
+        counts = {t["name"]: t["count"] for t in body["items"]}
+        assert counts["female"] == 10623105
+
+    def test_rule34_tag_types_are_enriched(self, rule34_server):
+        """The picker shows namespaces; autocomplete only reports names."""
+        tc, app, transport = rule34_server
+        body = tc.get(
+            "/api/tags/search", params={"q": "ca", "source": "rule34"}, headers=H(app)
+        ).json()
+        items = {t["name"]: t for t in body["items"]}
+        assert items["cat"]["type"] == "general"
+        # the exact lookup supplies the id and the real post count
+        assert items["cat"]["id"] == 4514
+        assert items["cat"]["count"] == 27829
+        assert any("name=cat" in u for u in transport.requests)
 
     def test_rule34_autocomplete_endpoint(self, rule34_server):
         tc, app, transport = rule34_server
@@ -381,8 +558,14 @@ class TestRule34Routes:
             "/api/tags/search", params={"q": "ca", "source": "rule34"}, headers=H(app)
         )
         assert r.status_code == 200
-        names = [t["name"] for t in r.json()["items"]]
+        items = r.json()["items"]
+        names = [t["name"] for t in items]
         assert "cat" in names
+        assert "cathedral" in names
+        # the count comes from the exact lookup (the authoritative one)
+        counts = {t["name"]: t["count"] for t in items}
+        assert counts["cat"] == 27829
+        assert counts["cathedral"] == 870
         assert any("autocomplete.php" in u for u in transport.requests)
 
 
@@ -397,6 +580,57 @@ class TestRule34Catalogue:
         ).fetchone()
         assert row is not None
         assert row["source"] == "rule34"
+
+    def test_saving_rule34_post_files_its_tags_under_rule34(self, rule34_server):
+        """A rule34 gallery's tags must not be filed as nhentai tags.
+
+        The Tag dataclass defaults to source="nhentai", so the gallery's
+        source has to win — otherwise a rule34 tag with the same name as an
+        nhentai one would share its row and the two sources' counts would
+        be merged.
+        """
+        tc, app, _ = rule34_server
+        gid = encode_id(555)
+        tc.post("/api/catalogue", json={"id": gid, "persist": True}, headers=H(app))
+        rows = app.db.conn.execute(
+            "SELECT name, source FROM tags WHERE name IN ('1girl', 'someartist', 'somechar')"
+        ).fetchall()
+        assert rows
+        assert {r["source"] for r in rows} == {"rule34"}
+        # the join actually points at the rule34 rows
+        joined = app.db.conn.execute(
+            "SELECT t.source FROM gallery_tags gt JOIN tags t ON t.id = gt.tag_id "
+            "WHERE gt.gallery_id=?",
+            (gid,),
+        ).fetchall()
+        assert joined
+        assert {r["source"] for r in joined} == {"rule34"}
+
+    def test_same_tag_name_can_exist_for_both_sources(self, rule34_server):
+        import asyncio
+
+        tc, app, _ = rule34_server
+        gid = encode_id(555)
+        tc.post("/api/catalogue", json={"id": gid, "persist": True}, headers=H(app))
+        # an nhentai gallery with an identically named tag
+        from nhcatalogue.client.models import Gallery, Tag
+
+        g = Gallery(
+            id=1,
+            media_id="m1",
+            title_en="t",
+            title_ja="",
+            title_pretty="t",
+            source="nhentai",
+            tags=[Tag(id=0, name="1girl", type="general", count=1)],
+        )
+        asyncio.run(app.db.upsert_gallery(g))
+        rows = app.db.conn.execute(
+            "SELECT source, count(*) c FROM tags WHERE name='1girl' GROUP BY source"
+        ).fetchall()
+        by_source = {r["source"]: r["c"] for r in rows}
+        assert by_source.get("rule34") == 1
+        assert by_source.get("nhentai") == 1
 
     def test_rule34_and_nhentai_ids_do_not_collide(self, rule34_server):
         tc, app, _ = rule34_server
@@ -447,7 +681,7 @@ class TestRule34Download:
             if items and items[0]["status"] in ("done", "error"):
                 break
             time.sleep(0.2)
-        assert any("wimg.xxx/image/555" in u for u in transport.requests)
+        assert any("api-cdn.rule34.xxx/images/3538" in u for u in transport.requests)
 
     def test_video_download_uses_mp4_extension(self, rule34_server):
         import time

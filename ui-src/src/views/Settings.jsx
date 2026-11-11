@@ -135,6 +135,7 @@ export default function SettingsView({ settings, reload }) {
         rule34_api_host: s.rule34_api_host || "",
         rule34_user_id: s.rule34_user_id || "",
         rule34_api_key: s.rule34_api_key || "",
+        rule34_rate_limit_rps: +s.rule34_rate_limit_rps,
         library_root: s.library_root,
         folder_template: s.folder_template,
         rate_limit_rps: +s.rate_limit_rps,
@@ -375,7 +376,7 @@ export default function SettingsView({ settings, reload }) {
 
         <Row
           label="Rule 34 credentials"
-          hint="rule34's API needs an account id and key — get them from rule34 → account → options. Stored like any other setting."
+          hint="rule34's API needs an account id and key — get them from rule34 → account → options. Stored like any other setting. The rule34 API throttles hard, so it has its own request rate (default 1/sec)."
         >
           <input
             className="mb-1 w-full"
@@ -396,11 +397,21 @@ export default function SettingsView({ settings, reload }) {
             onChange={(e) => set("rule34_user_id", e.target.value)}
           />
           <input
-            className="w-full"
+            className="mb-1 w-full"
             placeholder="rule34 api key…"
             type="password"
             value={s.rule34_api_key || ""}
             onChange={(e) => set("rule34_api_key", e.target.value)}
+          />
+          <input
+            className="w-full"
+            type="number"
+            step="0.1"
+            min="0.2"
+            max="5"
+            placeholder="rule34 requests/sec (default 1)"
+            value={s.rule34_rate_limit_rps ?? 1}
+            onChange={(e) => set("rule34_rate_limit_rps", e.target.value)}
           />
         </Row>
 

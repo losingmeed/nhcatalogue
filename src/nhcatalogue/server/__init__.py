@@ -478,7 +478,6 @@ def create_app(app: App) -> FastAPI:
             else:
                 out.append({"type": "general", "name": item})
         return out
-
     @api.post("/api/catalogue", dependencies=[GUARD])
     async def api_catalogue_add(body: GalleryAddBody) -> dict:
         """Add gallery {id} to catalogue: persist row + tags, cache cover.
@@ -615,6 +614,10 @@ def create_app(app: App) -> FastAPI:
                 "provider": source,
                 "error": str(e),
             }
+        if source == "rule34":
+            # The autocomplete endpoint only reports names and counts, so
+            # the namespaces are filled in from the tag endpoint.
+            tags = await _enrich_rule34_tag_types(app, tags)
         payload = {
             "items": [
                 {
@@ -1137,6 +1140,40 @@ def create_app(app: App) -> FastAPI:
 
 def _file_response(path: Path) -> FileResponse:
     return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+
+async def _enrich_rule34_tag_types(app, tags: list):
+    """Fill in the namespace of rule34 tag names.
+
+    The autocomplete endpoint reports only names and counts, so each name is
+    looked up on the tag endpoint, which answers with the tag's namespace and
+    its real post count. Lookups run concurrently (the endpoint is cheap and
+    the API tolerates parallel requests) and a failed lookup just leaves the
+    tag as "general".
+    """
+    if not tags:
+        return tags
+    client = app.source_client("rule34")
+    lookup = getattr(client, "_lookup_tag", None)
+    if lookup is None:
+        return tags
+
+    async def one(tag):
+        try:
+            found = await lookup(tag.name)
+        except Exception as e:  # pragma: no cover - network hiccup
+            log.debug("rule34: tag lookup failed for %s: %s", tag.name, e)
+            return tag
+        if found is None:
+            return tag
+        tag.type = found.type
+        if found.id:
+            tag.id = found.id
+        if found.count:
+            tag.count = found.count
+        return tag
+
+    return list(await asyncio.gather(*(one(t) for t in tags)))
 
 
 def pick_free_port() -> int:

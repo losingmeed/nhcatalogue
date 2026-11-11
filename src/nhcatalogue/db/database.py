@@ -169,7 +169,12 @@ class Database:
         source = getattr(gallery, "source", "") or "nhentai"
         tag_ids: list[int] = []
         for tag in gallery.tags:
-            if not getattr(tag, "source", ""):
+            # A tag belongs to the gallery's source. The Tag dataclass
+            # defaults to "nhentai", so the source is taken from the gallery
+            # unless the tag was explicitly marked otherwise — otherwise a
+            # rule34 gallery's tags would be filed under nhentai and collide
+            # with the identically-named nhentai tags.
+            if getattr(tag, "source", "") in ("", "nhentai"):
                 tag.source = source
             tag_ids.append(self._upsert_tag(tag))
         conn = self.conn
