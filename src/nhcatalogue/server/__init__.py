@@ -167,6 +167,13 @@ def create_app(app: App) -> FastAPI:
 
     MEDIA_GUARD = Depends(media_guard)
 
+    # Rule 34 lives in its own router so the nhentai routes above stay as they
+    # were (no behaviour change for existing paths). Registered here, before
+    # the SPA catch-all, so the catch-all cannot swallow these paths.
+    from .rule34_routes import build_rule34_router
+
+    api.include_router(build_rule34_router(app, GUARD, MEDIA_GUARD))
+
     def _cover_url(g: Gallery) -> str:
         """Cover endpoint URL, carrying the v2 CDN path when we have one."""
         if g.cover_path:
@@ -211,6 +218,7 @@ def create_app(app: App) -> FastAPI:
             "title": g.title,
             "title_en": g.title_en,
             "title_ja": g.title_ja,
+            "source": getattr(g, "source", "") or "nhentai",
             "title_pretty": g.title_pretty,
             "num_pages": g.num_pages,
             "upload_date": g.upload_date,
@@ -236,12 +244,30 @@ def create_app(app: App) -> FastAPI:
             ],
         }
 
+    async def _live_source(gallery_id: int) -> str:
+        """Which provider a gallery belongs to.
+
+        The catalogue row wins, then the search cache, and finally the id
+        namespace — rule34 ids live above ``RULE34_ID_OFFSET``, so an
+        unsaved gallery still resolves to the right provider.
+        """
+        row = await app.db.get_gallery(gallery_id)
+        if row and row.get("source"):
+            return str(row["source"])
+        cached = search_cache.get(f"gallery:{int(gallery_id)}")
+        if cached and isinstance(cached, dict) and cached.get("source"):
+            return str(cached["source"])
+        from ..client.rule34 import is_rule34_id
+
+        return "rule34" if is_rule34_id(gallery_id) else "nhentai"
+
     async def _cached_live_gallery(gallery_id: int) -> Gallery:
         """Reuse a detail payload for the session instead of re-fetching it."""
         key = f"gallery:{int(gallery_id)}"
         g = detail_cache.get(key)
         if g is None:
-            g = await app.client.gallery(gallery_id)
+            source = await _live_source(gallery_id)
+            g = await app.source_client(source).gallery(gallery_id)
             detail_cache.put(key, g)
         return g
 
@@ -312,9 +338,10 @@ def create_app(app: App) -> FastAPI:
         q: str = "",
         page: int = 1,
         sort: str = "",
+        source: str = "nhentai",
     ) -> dict:
         """Live passthrough search (cached) — Browse view data source."""
-        key = f"search:{q}:{page}:{sort}"
+        key = f"search:{q}:{page}:{sort}:{source}"
         catalogue_ids = set(await app.db.gallery_ids())
         cached = cache.get(key)
         if cached is not None:
@@ -326,7 +353,7 @@ def create_app(app: App) -> FastAPI:
                 item["in_catalogue"] = persisted or item["id"] in ephemeral_ids
             return cached
         try:
-            result = await app.client.search(q, page=page, sort=sort)
+            result = await app.source_client(source).search(q, page=page, sort=sort)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
         results = []
@@ -347,6 +374,8 @@ def create_app(app: App) -> FastAPI:
                     for t in g.tags
                 ],
                 "cover_url": _cover_url(g),
+                "source": getattr(g, "source", "") or source,
+                "media_kind": getattr(g, "media_kind", "") or "image",
                 "in_catalogue": persisted or g.id in ephemeral_ids,
                 "persisted": persisted,
                 # lightweight: the full page list is fetched only on add
@@ -552,23 +581,24 @@ def create_app(app: App) -> FastAPI:
         q: str = "",
         type: str = "",
         limit: int = Query(50, ge=1, le=50),
+        source: str = "nhentai",
     ) -> dict:
-        """Live nhentai tag search for the Browse picker.
+        """Live tag search for the Browse picker (nhentai or rule34).
 
         An empty ``q`` returns the site's most popular tags, so you can
         discover tags before saving anything locally. Results are cached; if
         the network is unavailable we fall back to tags already in the local
         catalogue so the picker keeps working offline.
         """
-        key = f"tagsearch:{type}:{q.strip().lower()}:{limit}"
+        key = f"tagsearch:{source}:{type}:{q.strip().lower()}:{limit}"
         cached = tag_search_cache.get(key)
         if cached is not None:
             return cached
         try:
-            tags = await app.client.search_tags(q, type_=type, limit=limit)
+            tags = await app.source_client(source).search_tags(q, type_=type, limit=limit)
         except Exception as e:
             log.debug("live tag search failed (%s); using local tags", e)
-            res = await app.db.tag_search(q=q, type_=type, limit=limit)
+            res = await app.db.tag_search(q=q, type_=type, limit=limit, source=source)
             items = [
                 {
                     "id": t["id"],
@@ -579,7 +609,12 @@ def create_app(app: App) -> FastAPI:
                 }
                 for t in res["items"]
             ]
-            return {"items": items, "source": "local", "error": str(e)}
+            return {
+                "items": items,
+                "source": "local",
+                "provider": source,
+                "error": str(e),
+            }
         payload = {
             "items": [
                 {
@@ -592,6 +627,7 @@ def create_app(app: App) -> FastAPI:
                 for t in tags
             ],
             "source": "live",
+            "provider": source,
         }
         tag_search_cache.put(key, payload)
         return payload
@@ -833,8 +869,10 @@ def create_app(app: App) -> FastAPI:
 
         # 3) stream from the CDN through the strategy chain
         try:
+            source = await _live_source(gallery_id)
+            client = app.source_client(source)
             if not pages:
-                g = await app.client.gallery(gallery_id)
+                g = await client.gallery(gallery_id)
                 pages = g.pages
                 reader_cache.put(
                     f"reader:{gallery_id}:{str(folder) if folder is not None else ''}",
@@ -842,8 +880,8 @@ def create_app(app: App) -> FastAPI:
                 )
             if page_number > len(pages):
                 raise HTTPException(404, f"page {page_number} beyond {len(pages)}")
-            data = await app.client.fetch_image(
-                app.client.page_url(g, page_number)
+            data = await client.fetch_image(
+                client.page_url(g, page_number)
             )
         except HTTPException:
             raise
@@ -870,9 +908,12 @@ def create_app(app: App) -> FastAPI:
                 data,
                 len(pages),
             )
+        media_type = f"image/{ext}"
+        if getattr(g, "media_kind", "") == "video":
+            media_type = f"video/{ext}"
         return Response(
             content=data,
-            media_type=f"image/{ext}",
+            media_type=media_type,
             headers={"Cache-Control": "private, max-age=86400"},
         )
 

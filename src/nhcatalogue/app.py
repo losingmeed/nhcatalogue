@@ -29,6 +29,7 @@ class App:
         self.token = secrets.token_urlsafe(24)
         # lazily created shared components
         self._client = None
+        self._rule34_client = None
         self._downloader = None
         self._syncer = None
         self._page_cache = None
@@ -102,6 +103,26 @@ class App:
 
             self._client = NhentaiClient(self.settings)
         return self._client
+
+    def source_client(self, source: str = "nhentai"):
+        """Client for a given source. Shares the transport with the nhentai client."""
+        from .client.rule34 import Rule34Client
+        from .client.sources import get_source
+
+        spec = get_source(source)
+        if spec.name == "rule34":
+            if self._rule34_client is None:
+                self._rule34_client = Rule34Client(self.settings, self.client.transport)
+            else:
+                self._rule34_client.refresh_from_settings()
+            return self._rule34_client
+        self.client.refresh_from_settings()
+        return self.client
+
+    def client_for_gallery(self, gallery):
+        """Client matching a gallery's source (downloads use this)."""
+        source = getattr(gallery, "source", "") or "nhentai"
+        return self.source_client(source)
 
     @property
     def downloader(self):

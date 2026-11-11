@@ -282,13 +282,17 @@ class NhentaiClient:
         multiplies throughput without raising the per-host request rate. Pass
         ``host`` explicitly to pin a specific mirror (used by tests/fallbacks).
         """
-        h = IMAGE_HOSTS[(page - 1 if host is None else host) % len(IMAGE_HOSTS)]
         p = gallery.pages[page - 1]
+        if p.path.startswith("http"):
+            return p.path
+        h = IMAGE_HOSTS[(page - 1 if host is None else host) % len(IMAGE_HOSTS)]
         if p.path:
             return f"https://{h}/{p.path.lstrip('/')}"
         return f"https://{h}/galleries/{gallery.media_id}/{page}.{p.ext}"
 
     def cover_url(self, gallery: Gallery, host: int | None = None) -> str:
+        if gallery.cover_path.startswith("http"):
+            return gallery.cover_path
         h = THUMB_HOSTS[
             ((gallery.id - 1) if host is None else host) % len(THUMB_HOSTS)
         ]
@@ -299,6 +303,8 @@ class NhentaiClient:
         return f"https://{h}/galleries/{gallery.media_id}/cover.{gallery.cover_ext}"
 
     def thumb_url(self, gallery: Gallery, host: int | None = None) -> str:
+        if gallery.thumb_path.startswith("http"):
+            return gallery.thumb_path
         h = THUMB_HOSTS[
             ((gallery.id - 1) if host is None else host) % len(THUMB_HOSTS)
         ]
@@ -313,7 +319,9 @@ class NhentaiClient:
             return False
         ctype = str(resp.headers.get("content-type") or "").lower()
         if ctype and not (
-            ctype.startswith("image/") or ctype.startswith("application/octet-stream")
+            ctype.startswith("image/")
+            or ctype.startswith("video/")
+            or ctype.startswith("application/octet-stream")
         ):
             return False
         return True
@@ -333,6 +341,9 @@ class NhentaiClient:
         i4 (and t1 → t4 for thumbs), with the legacy i./t. hosts as fallbacks.
         429/5xx responses are retried with ``Retry-After``/exponential backoff
         before moving on to the next mirror.
+
+        URLs on a foreign host (another source, e.g. rule34) are fetched from
+        that host only — rewriting them to an nhentai CDN would be wrong.
         """
         parsed_host = url.split("/")[2]
         prefix = parsed_host.split(".")[0][:1]
@@ -340,6 +351,8 @@ class NhentaiClient:
             family = list(THUMB_HOSTS) + list(LEGACY_THUMB_HOSTS)
         else:
             family = list(IMAGE_HOSTS) + list(LEGACY_IMAGE_HOSTS)
+        if parsed_host not in family:
+            family = []
         candidates = [parsed_host] + [h for h in family if h != parsed_host]
         last: Exception | None = None
         attempts = max(1, min(4, self.settings.max_retries))
@@ -371,6 +384,15 @@ class NhentaiClient:
                 last = BlockedError(f"{host}: HTTP {resp.status} for image")
                 break  # non-retryable (404 etc.) → next mirror
         raise BlockedError(f"could not fetch image {url}: {last}", [url])
+
+    async def fetch_media(self, url: str) -> tuple[bytes, str]:
+        """Fetch a media file (image *or* video) and report its content type."""
+        parsed_host = url.split("/")[2]
+        resp = await self._send(url, headers=self._image_headers())
+        if resp.status != 200 or not resp.content:
+            raise BlockedError(f"{parsed_host}: HTTP {resp.status} for media")
+        ctype = str(resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        return resp.content, ctype or "application/octet-stream"
 
     # ------------------------------------------------------------- API methods
 

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api.js";
 import BlockedBanner from "./components/BlockedBanner.jsx";
+import SourceFlyout from "./components/SourceFlyout.jsx";
 import Browse from "./views/Browse.jsx";
+import Rule34Browse from "./views/Rule34Browse.jsx";
 import GalleryDetail from "./views/GalleryDetail.jsx";
 import Reader from "./views/Reader.jsx";
 import Library from "./views/Library.jsx";
@@ -30,7 +32,6 @@ export function navigate(to) {
 }
 
 const NAV = [
-  ["browse", "Browse", "🔍"],
   ["library", "Library", "📚"],
   ["tags", "Tags", "🏷️"],
   ["collections", "Collections", "📁"],
@@ -86,6 +87,9 @@ export default function App() {
       case "settings":
         return <SettingsView settings={settings} reload={loadSettings} />;
       case "browse":
+        return <Browse />;
+      case "rule34":
+        return <Rule34Browse />;
       default:
         return <Browse />;
     }
@@ -124,6 +128,10 @@ export default function App() {
             nh<span className="text-slate-200">catalogue</span>
           </div>
           <nav className="flex-1 space-y-0.5 px-2">
+            <SourceFlyout
+              active={route.view === "rule34" ? "rule34" : "browse"}
+              onPick={(id) => navigate(`/${id}`)}
+            />
             {NAV.map(([id, label, icon]) => (
               <a
                 key={id}

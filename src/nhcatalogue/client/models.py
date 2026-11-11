@@ -13,7 +13,18 @@ from typing import Any
 # nhentai extension codes -> real extensions
 EXT_MAP = {"j": "jpg", "p": "png", "g": "gif", "w": "webp", "b": "bmp", "a": "avif"}
 
-TAG_TYPES = ("general", "artist", "parody", "character", "group", "language", "category")
+TAG_TYPES = (
+    "general",
+    "artist",
+    "parody",
+    "character",
+    "group",
+    "language",
+    "category",
+    "copyright",
+    "series",
+    "other",
+)
 # nhentai's API calls general tags type "tag"
 API_TAG_TYPE_MAP = {"tag": "general"}
 UI_TAG_TYPE_MAP = {v: k for k, v in API_TAG_TYPE_MAP.items()}
@@ -47,6 +58,7 @@ class Tag:
     type: str
     count: int = 0
     url: str | None = None
+    source: str = "nhentai"
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> Tag:
@@ -126,6 +138,9 @@ class Gallery:
     num_pages: int = 0
     upload_date: int = 0
     scanlator: str = ""
+    source: str = "nhentai"
+    media_kind: str = "image"
+    file_size: int = 0
 
     @property
     def title(self) -> str:
@@ -238,6 +253,9 @@ class Gallery:
             num_pages=num_pages,
             upload_date=int(raw.get("upload_date", 0) or 0),
             scanlator=str(raw.get("scanlator") or ""),
+            source=str(raw.get("source") or "nhentai"),
+            media_kind=str(raw.get("media_kind") or "image"),
+            file_size=int(raw.get("file_size") or 0),
         )
 
     @classmethod

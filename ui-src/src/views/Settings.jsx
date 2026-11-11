@@ -131,6 +131,9 @@ export default function SettingsView({ settings, reload }) {
         cf_clearance: s.cf_clearance || "",
         cf_user_agent: s.cf_user_agent || "",
         flaresolverr_url: s.flaresolverr_url || "",
+        rule34_domain: s.rule34_domain || "",
+        rule34_user_id: s.rule34_user_id || "",
+        rule34_api_key: s.rule34_api_key || "",
         library_root: s.library_root,
         folder_template: s.folder_template,
         rate_limit_rps: +s.rate_limit_rps,
@@ -366,6 +369,31 @@ export default function SettingsView({ settings, reload }) {
             placeholder="http://127.0.0.1:8191"
             value={s.flaresolverr_url || ""}
             onChange={(e) => set("flaresolverr_url", e.target.value)}
+          />
+        </Row>
+
+        <Row
+          label="Rule 34 credentials"
+          hint="rule34's API needs an account id and key — get them from rule34 → account → options. Stored like any other setting."
+        >
+          <input
+            className="mb-1 w-full"
+            placeholder="rule34 host (default rule34.xxx)"
+            value={s.rule34_domain || ""}
+            onChange={(e) => set("rule34_domain", e.target.value)}
+          />
+          <input
+            className="mb-1 w-full"
+            placeholder="rule34 user id…"
+            value={s.rule34_user_id || ""}
+            onChange={(e) => set("rule34_user_id", e.target.value)}
+          />
+          <input
+            className="w-full"
+            placeholder="rule34 api key…"
+            type="password"
+            value={s.rule34_api_key || ""}
+            onChange={(e) => set("rule34_api_key", e.target.value)}
           />
         </Row>
 

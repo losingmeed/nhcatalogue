@@ -252,8 +252,8 @@ class Downloader:
                     raise _Canceled()
                 if manifests.verify_page(manifest, page.number, folder, page.ext):
                     return page.number, b"", False  # resume: already on disk
-                url = self.app.client.page_url(gallery, page.number)
-                data = await self.app.client.fetch_image(url)
+                url = self.app.client_for_gallery(gallery).page_url(gallery, page.number)
+                data = await self.app.client_for_gallery(gallery).fetch_image(url)
                 return page.number, data, True
 
         tasks = [asyncio.create_task(fetch_page(p)) for p in gallery.pages]
@@ -359,7 +359,8 @@ class Downloader:
     async def _fetch_cover(self, gallery: Gallery, folder: Path, cover_path: Path) -> None:
         if cover_path.exists():
             return
-        data = await self.app.client.fetch_image(self.app.client.cover_url(gallery))
+        client = self.app.client_for_gallery(gallery)
+        data = await client.fetch_image(client.cover_url(gallery))
         folder.mkdir(parents=True, exist_ok=True)
         cover_path.write_bytes(data)
         await asyncio.to_thread(manifests.write_metadata, folder, gallery)
@@ -427,6 +428,9 @@ def gallery_from_dict(d: dict[str, Any]) -> Gallery:
         data = {}
     if data:
         g = Gallery.from_api(data)
+        g.source = str(d.get("source") or data.get("source") or "nhentai")
+        g.media_kind = str(data.get("media_kind") or "image")
+        g.file_size = int(data.get("file_size") or 0)
         g.tags = [
             Tag(id=t["id"], name=t["name"], type=t["type"], count=t.get("count", 0), url=t.get("url"))
             for t in (d.get("tags") or [])
@@ -441,6 +445,7 @@ def gallery_from_dict(d: dict[str, Any]) -> Gallery:
         title_ja="",
         title_pretty=str(d.get("title_pretty") or ""),
         num_pages=int(d.get("num_pages") or 0),
+        source=str(d.get("source") or "nhentai"),
     )
     g.tags = [
         Tag(id=t["id"], name=t["name"], type=t["type"], count=t.get("count", 0))

@@ -16,7 +16,7 @@ import re
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 from ..client.models import Gallery, Tag, normalize_tag_name, normalize_type
 
@@ -124,8 +124,10 @@ class Database:
     # ------------------------------------------------------------- upsert tags
 
     def _upsert_tag(self, tag: Tag) -> int:
+        source = getattr(tag, "source", "") or "nhentai"
         row = self.conn.execute(
-            "SELECT id FROM tags WHERE name_norm=? AND type=?", (tag.name_norm, tag.type)
+            "SELECT id FROM tags WHERE name_norm=? AND type=? AND source=?",
+            (tag.name_norm, tag.type, source),
         ).fetchone()
         if row:
             # keep the existing row id (gallery_tags references it); refresh
@@ -135,17 +137,40 @@ class Database:
                 (tag.count, tag.name, tag.url or "", row["id"]),
             )
             return int(row["id"])
+        # never REPLACE: the api id may already belong to a different tag and
+        # replacing it would cascade-delete its gallery_tags rows.
+        new_id = int(tag.id or 0)
+        if not new_id or self.conn.execute(
+            "SELECT 1 FROM tags WHERE id=?", (new_id,)
+        ).fetchone():
+            cur = self.conn.execute(
+                "INSERT INTO tags(name, name_norm, type, count, url, source) "
+                "VALUES (?,?,?,?,?,?)",
+                (tag.name, tag.name_norm, tag.type, tag.count, tag.url or "", source),
+            )
+            return int(cur.lastrowid)
         self.conn.execute(
-            "INSERT OR REPLACE INTO tags(id, name, name_norm, type, count, url) "
-            "VALUES (?,?,?,?,?,?)",
-            (tag.id, tag.name, tag.name_norm, tag.type, tag.count, tag.url or ""),
+            "INSERT INTO tags(id, name, name_norm, type, count, url, source) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                new_id,
+                tag.name,
+                tag.name_norm,
+                tag.type,
+                tag.count,
+                tag.url or "",
+                source,
+            ),
         )
-        return int(tag.id)
+        return new_id
 
     def _upsert_gallery(self, gallery: Gallery) -> None:
         # tag rows first (need ids for the join + FTS triggers)
+        source = getattr(gallery, "source", "") or "nhentai"
         tag_ids: list[int] = []
         for tag in gallery.tags:
+            if not getattr(tag, "source", ""):
+                tag.source = source
             tag_ids.append(self._upsert_tag(tag))
         conn = self.conn
         exists = conn.execute("SELECT 1 FROM galleries WHERE id=?", (gallery.id,)).fetchone()
@@ -154,8 +179,8 @@ class Database:
             # never clobber user data on re-add
             conn.execute(
                 "UPDATE galleries SET media_id=?, title_en=?, title_ja=?, title_pretty=?, "
-                "num_pages=?, upload_date=?, language=?, category=?, scanlator=?, raw_json=? "
-                "WHERE id=?",
+                "num_pages=?, upload_date=?, language=?, category=?, scanlator=?, raw_json=?, "
+                "source=? WHERE id=?",
                 (
                     gallery.media_id,
                     gallery.title_en,
@@ -167,14 +192,15 @@ class Database:
                     gallery.category,
                     gallery.scanlator,
                     raw_json,
+                    source,
                     gallery.id,
                 ),
             )
         else:
             conn.execute(
                 "INSERT INTO galleries(id, media_id, title_en, title_ja, title_pretty, "
-                "num_pages, upload_date, language, category, scanlator, raw_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "num_pages, upload_date, language, category, scanlator, raw_json, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     gallery.id,
                     gallery.media_id,
@@ -187,6 +213,7 @@ class Database:
                     gallery.category,
                     gallery.scanlator,
                     raw_json,
+                    source,
                 ),
             )
         # refresh gallery_tags: delete-then-insert keeps FTS triggers correct
@@ -241,6 +268,9 @@ class Database:
                 "num_pages": gallery.num_pages,
                 "upload_date": gallery.upload_date,
                 "scanlator": gallery.scanlator,
+                "source": getattr(gallery, "source", "") or "nhentai",
+                "media_kind": getattr(gallery, "media_kind", "") or "image",
+                "file_size": getattr(gallery, "file_size", 0) or 0,
             }
         )
 
@@ -452,7 +482,7 @@ class Database:
     # ------------------------------------------------------------ tag queries
 
     def _tag_search(
-        self, q: str = "", type_: str = "", limit: int = 100, offset: int = 0
+        self, q: str = "", type_: str = "", limit: int = 100, offset: int = 0, source: str = ""
     ) -> dict[str, Any]:
         conn = self.conn
         where = ["1=1"]
@@ -464,6 +494,9 @@ class Database:
         if type_:
             where.append("t.type=?")
             params.append(normalize_type(type_))
+        if source:
+            where.append("t.source=?")
+            params.append(source)
         # gallery counts come from the local catalogue (plan: /api/tags?q=&type=)
         base = (
             "FROM tags t LEFT JOIN gallery_tags gt ON gt.tag_id=t.id "
@@ -483,8 +516,8 @@ class Database:
             "offset": offset,
         }
 
-    async def tag_search(self, q: str = "", type_: str = "", limit: int = 100, offset: int = 0):
-        return await self._run(self._tag_search, q, type_, limit, offset)
+    async def tag_search(self, q: str = "", type_: str = "", limit: int = 100, offset: int = 0, source: str = ""):
+        return await self._run(self._tag_search, q, type_, limit, offset, source)
 
     def _tag_facets(
         self,
@@ -525,13 +558,19 @@ class Database:
     async def tag_facets(self, **kwargs) -> dict[str, Any]:
         return await self._run(self._tag_facets, **kwargs)
 
-    def _tags_by_group(self) -> dict[str, list[dict]]:
+    def _tags_by_group(self, source: str = "") -> dict[str, list[dict]]:
         """Tags browser: all tags in the catalogue grouped by type, with counts."""
         conn = self.conn
+        where = ["1=1"]
+        params: list[Any] = []
+        if source:
+            where.append("t.source=?")
+            params.append(source)
         rows = conn.execute(
             "SELECT t.id, t.name, t.name_norm, t.type, t.count, "
             "count(gt.gallery_id) AS gallery_count "
             "FROM tags t JOIN gallery_tags gt ON gt.tag_id=t.id "
+            f"WHERE {' AND '.join(where)} "
             "GROUP BY t.id ORDER BY t.type, gallery_count DESC, t.name_norm"
         ).fetchall()
         groups: dict[str, list[dict]] = {}
@@ -539,8 +578,8 @@ class Database:
             groups.setdefault(r["type"], []).append(dict(r))
         return groups
 
-    async def tags_by_group(self) -> dict[str, list[dict]]:
-        return await self._run(self._tags_by_group)
+    async def tags_by_group(self, source: str = "") -> dict[str, list[dict]]:
+        return await self._run(self._tags_by_group, source)
 
     # --------------------------------------------------------------- collections
 
