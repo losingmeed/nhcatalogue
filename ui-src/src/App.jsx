@@ -13,6 +13,7 @@ import Watchlists from "./views/Watchlists.jsx";
 import Downloads from "./views/Downloads.jsx";
 import SettingsView from "./views/Settings.jsx";
 import FirstRun from "./views/FirstRun.jsx";
+import GoonCounter from "./views/GoonCounter.jsx";
 import { applyTheme } from "./theme.js";
 
 // tiny hash router: #/browse, #/gallery/123, #/reader/123, ...
@@ -33,6 +34,7 @@ export function navigate(to) {
 
 const NAV = [
   ["library", "Library", "📚"],
+  ["goon", "Goon", "😈"],
   ["tags", "Tags", "🏷️"],
   ["collections", "Collections", "📁"],
   ["watchlists", "Watchlists", "🔔"],
@@ -76,6 +78,8 @@ export default function App() {
         return <Reader id={route.arg} />;
       case "library":
         return <Library />;
+      case "goon":
+        return <GoonCounter />;
       case "tags":
         return <TagsBrowser />;
       case "collections":

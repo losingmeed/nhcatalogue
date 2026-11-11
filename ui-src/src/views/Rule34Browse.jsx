@@ -6,6 +6,7 @@ import Rule34Viewer from "./Rule34Viewer.jsx";
 
 const SELECTED_KEY = "nhc_r34_selected";
 const BLACKLIST_KEY = "nhc_r34_blacklist";
+const MATCH_KEY = "nhc_r34_match";
 
 function splitTokens(q) {
   const out = [];
@@ -110,6 +111,13 @@ export default function Rule34Browse() {
   const [selectedTags, setSelectedTags] = useState(initial.selected);
   const [blacklistTags, setBlacklistTags] = useState(initial.blacklisted);
   const [viewing, setViewing] = useState(-1);
+  const [match, setMatch] = useState(() => {
+    try {
+      return localStorage.getItem(MATCH_KEY) === "or" ? "or" : "and";
+    } catch {
+      return "and";
+    }
+  });
 
   useEffect(() => {
     api
@@ -139,7 +147,7 @@ export default function Rule34Browse() {
       setLoading(true);
       setError("");
       try {
-        const res = await api.get("/api/search", { q: query, page: p, source: "rule34" });
+        const res = await api.get("/api/search", { q: query, page: p, source: "rule34", match });
         setItems((prev) => (replace ? res.results || [] : [...prev, ...(res.results || [])]));
       } catch (e) {
         setError(e.message);
@@ -147,7 +155,7 @@ export default function Rule34Browse() {
         setLoading(false);
       }
     },
-    [query]
+    [query, match]
   );
 
   const submit = useCallback(() => {
@@ -158,6 +166,15 @@ export default function Rule34Browse() {
     setViewing(-1);
     load(1, true);
   }, [load, query]);
+
+  // remember the tag match mode (and → all tags must match, or → any tag)
+  useEffect(() => {
+    try {
+      localStorage.setItem(MATCH_KEY, match);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [match]);
 
   const toggleTag = (tag) => {
     const isSelected = selectedTags.some((t) => sameTag(t, tag));
@@ -239,6 +256,15 @@ export default function Rule34Browse() {
             onBlacklist={toggleBlacklist}
           />
         </div>
+        <select
+          value={match}
+          onChange={(e) => setMatch(e.target.value)}
+          className="w-32"
+          title="how multiple tags combine: all = every tag must match, any = at least one"
+        >
+          <option value="and">match: all</option>
+          <option value="or">match: any</option>
+        </select>
         <button className="btn btn-primary text-sm" onClick={submit}>
           search
         </button>

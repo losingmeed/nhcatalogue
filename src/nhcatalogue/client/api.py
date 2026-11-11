@@ -27,6 +27,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
 
@@ -60,6 +62,32 @@ SEARCH_TAGS_PATH = "/api/v2/tags/search"
 CONFIG_PATH = "/api/v2/config"
 TAG_CHUNK = 50
 
+# In-process response cache for live searches (client-side twin of the
+# server's LiveCache — this one lives in the long-lived client instance, so
+# it also covers repeat queries inside one app session, e.g. watchlists).
+SEARCH_CACHE_TTL = 300.0
+SEARCH_CACHE_MAXSIZE = 128
+
+
+def split_search_tokens(query: str) -> list[str]:
+    """Split a search query into tokens, keeping quoted phrases together."""
+    out: list[str] = []
+    cur = ""
+    quoted = False
+    for ch in query or "":
+        if ch == '"':
+            quoted = not quoted
+            cur += ch
+        elif ch.isspace() and not quoted:
+            if cur:
+                out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
 
 class NhentaiClient:
     """Async client. Pass ``transport=`` for tests; otherwise the best real one."""
@@ -80,6 +108,8 @@ class NhentaiClient:
         self._flaresolverr: FlareSolverrSession | None = None
         self._tag_cache: dict[int, Tag] = {}
         self.last_blocked: BlockedError | None = None
+        # in-process live search response cache (survives across queries)
+        self._search_cache: OrderedDict[str, tuple[float, SearchResult]] = OrderedDict()
 
     # ------------------------------------------------------------------ helpers
 
@@ -426,20 +456,66 @@ class NhentaiClient:
                 continue
             g.tags = [self._tag_cache[i] for i in g.tag_ids if i in self._tag_cache]
 
-    async def search(self, query: str, page: int = 1, sort: str = "") -> SearchResult:
+    async def search(
+        self,
+        query: str,
+        page: int = 1,
+        sort: str = "",
+        match: str = "and",
+    ) -> SearchResult:
         """Full nhentai query syntax: tag:, artist:, parody:, character:, group:,
-        language:, category:, -tag exclusions, quoted phrases."""
+        language:, category:, -tag exclusions, quoted phrases.
+
+        ``match="and"`` (default) requires every tag in the query to be
+        present; ``match="or"`` unions the results of the individual tags.
+        """
         if not (query or "").strip():
             return await self.all_galleries(page)
         if sort and sort not in SORTS:
             sort = ""
-        params: dict[str, Any] = {"query": query, "page": page}
-        if sort:
-            params["sort"] = sort
-        raw = await self._request_json(SEARCH_PATH, params)
-        result = SearchResult.from_api(raw, page)
-        await self._resolve_tags(result.galleries)
+        if match not in ("and", "or"):
+            match = "and"
+        key = f"q={query}|p={page}|s={sort}|m={match}"
+        cached = self._search_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] <= SEARCH_CACHE_TTL:
+            self._search_cache.move_to_end(key)
+            return cached[1]
+        if match == "or":
+            result = await self._search_or(query, page=page, sort=sort)
+        else:
+            params: dict[str, Any] = {"query": query, "page": page}
+            if sort:
+                params["sort"] = sort
+            raw = await self._request_json(SEARCH_PATH, params)
+            result = SearchResult.from_api(raw, page)
+            await self._resolve_tags(result.galleries)
+        self._search_cache[key] = (time.monotonic(), result)
+        while len(self._search_cache) > SEARCH_CACHE_MAXSIZE:
+            self._search_cache.popitem(last=False)
         return result
+
+    async def _search_or(self, query: str, page: int = 1, sort: str = "") -> SearchResult:
+        """OR-mode search: union the result sets of the individual tags."""
+        tokens = [t for t in split_search_tokens(query) if not t.startswith("-")]
+        merged: dict[int, Gallery] = {}
+        found_any = False
+        for tok in tokens:
+            found_any = True
+            sub = await self.search(tok, page=page, sort=sort)
+            for g in sub.galleries:
+                merged[g.id] = g
+        if not found_any:
+            # nothing searchable in the query — degrade to an AND search
+            params: dict[str, Any] = {"query": query, "page": page}
+            raw = await self._request_json(SEARCH_PATH, params)
+            return SearchResult.from_api(raw, page)
+        galleries = sorted(merged.values(), key=lambda g: g.upload_date, reverse=True)
+        return SearchResult(
+            galleries=galleries,
+            page=max(1, int(page)),
+            total_pages=0,
+            per_page=max(1, len(galleries)),
+        )
 
     async def gallery(self, gallery_id: int) -> Gallery:
         raw = await self._request_json(GALLERY_PATH.format(id=int(gallery_id)))

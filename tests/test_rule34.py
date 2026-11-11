@@ -525,6 +525,22 @@ class TestRule34Routes:
         for item in r.json()["results"]:
             assert item["source"] == "nhentai"
 
+    async def test_search_or_unions_individual_tags(self, rule34_server):
+        from nhcatalogue.client.rule34 import Rule34Client
+        from nhcatalogue.config import Settings
+
+        tc, app, transport = rule34_server
+        transport.add_json(search_url("cat"), [make_post_raw(555)])
+        transport.add_json(search_url("solo"), [make_post_raw(556, ext=".mp4")])
+        s = Settings()
+        s.rule34_user_id = "1234"
+        s.rule34_api_key = "secret"
+        s.rule34_rate_limit_rps = 1000
+        client = Rule34Client(s, transport=transport)
+        res = await client.search("cat solo", match="or")
+        assert {g.media_id for g in res.galleries} == {"555", "556"}
+        assert {g.media_kind for g in res.galleries} == {"image", "video"}
+
     def test_post_detail_reports_size_and_kind(self, rule34_server):
         tc, app, _ = rule34_server
         r = tc.get(f"/api/rule34/post/{encode_id(555)}", headers=H(app))

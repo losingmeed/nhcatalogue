@@ -232,6 +232,31 @@ class TestNhentaiClient:
         assert res.galleries == []
         assert t.requests == ["https://nhentai.net/api/v2/galleries?page=2"]
 
+    async def test_search_match_or_unions_tag_results(self):
+        # OR mode unions the per-tag result sets instead of ANDing them.
+        t = MockTransport()
+        t.add_json(
+            "https://nhentai.net/api/v2/search?query=tag%3Asolo&page=1",
+            make_search_raw([make_gallery_raw(7, title="Solo One")]),
+        )
+        t.add_json(
+            "https://nhentai.net/api/v2/search?query=tag%3Acat&page=1",
+            make_search_raw([make_gallery_raw(8, title="Cat One")]),
+        )
+        c = client_with(t)
+        res = await c.search("tag:solo tag:cat", match="or")
+        assert {g.id for g in res.galleries} == {7, 8}
+
+    async def test_search_response_cached_within_ttl(self):
+        # repeat identical searches are served from the client-side cache
+        t = MockTransport()
+        t.add_json("https://nhentai.net/api/v2/search?query=cat&page=1", make_search_raw([]))
+        c = client_with(t)
+        first = await c.search("cat")
+        second = await c.search("cat")
+        assert first.galleries == second.galleries
+        assert len(t.requests) == 1
+
     async def test_404_raises_not_found(self):
         t = MockTransport()
         t.routes["https://nhentai.net/api/v2/galleries/999"] = TransportResponse(404, {}, b"")

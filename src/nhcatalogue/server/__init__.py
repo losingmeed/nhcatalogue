@@ -339,9 +339,16 @@ def create_app(app: App) -> FastAPI:
         page: int = 1,
         sort: str = "",
         source: str = "nhentai",
+        match: str = "and",
     ) -> dict:
-        """Live passthrough search (cached) — Browse view data source."""
-        key = f"search:{q}:{page}:{sort}:{source}"
+        """Live passthrough search (cached) — Browse view data source.
+
+        ``match=and`` requires every tag in the query to be present
+        (default). ``match=or`` unions the results of the individual tags.
+        """
+        if match not in ("and", "or"):
+            match = "and"
+        key = f"search:{q}:{page}:{sort}:{source}:{match}"
         catalogue_ids = set(await app.db.gallery_ids())
         cached = cache.get(key)
         if cached is not None:
@@ -353,7 +360,7 @@ def create_app(app: App) -> FastAPI:
                 item["in_catalogue"] = persisted or item["id"] in ephemeral_ids
             return cached
         try:
-            result = await app.source_client(source).search(q, page=page, sort=sort)
+            result = await app.source_client(source).search(q, page=page, sort=sort, match=match)
         except Exception as e:
             raise HTTPException(502, str(e)) from e
         results = []

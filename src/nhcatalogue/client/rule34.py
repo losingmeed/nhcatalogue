@@ -36,6 +36,8 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import time
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urlencode
@@ -76,6 +78,11 @@ KNOWN_TAG_TYPES = {
 }
 
 PAGE_SIZE = 40
+
+# In-process response cache for live searches (client-side twin of the
+# server's LiveCache — lives in the long-lived client instance).
+RULE34_SEARCH_CACHE_TTL = 300.0
+RULE34_SEARCH_CACHE_MAXSIZE = 128
 
 _TAG_XML_RE = re.compile(r"<tag\b[^>]*/>")
 _ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
@@ -322,6 +329,9 @@ class Rule34Client:
         # Tag lookups are slow (one rate-limited request per name), so the
         # answers are cached: a tag's namespace and count never change.
         self._tag_cache: dict[str, Tag] = {}
+        # In-process live search response cache (client-side twin of the
+        # server's LiveCache — lives in the long-lived client instance).
+        self._search_cache: OrderedDict[str, tuple[float, SearchResult]] = OrderedDict()
         # The tag endpoint is cheap and tolerates parallel requests (ten
         # lookups answer in ~0.2s), so it gets a faster limiter than the
         # main search endpoint — otherwise the tag picker would take
@@ -558,7 +568,14 @@ class Rule34Client:
             file_size=0,
         )
 
-    async def search(self, query: str = "", page: int = 1, sort: str = "") -> SearchResult:
+    async def search(
+        self, query: str = "", page: int = 1, sort: str = "", match: str = "and"
+    ) -> SearchResult:
+        """Search the dapi.
+
+        ``match="and"`` (default) requires every tag in the query to be
+        present; ``match="or"`` unions the results of the individual tags.
+        """
         params: dict[str, Any] = {
             "json": 1,
             "limit": PAGE_SIZE,
@@ -568,19 +585,69 @@ class Rule34Client:
             "fields": "tag_info",
         }
         tags = normalize_tag_query(query or "")
-        if tags:
+        if match not in ("and", "or"):
+            match = "and"
+        if tags and match == "and":
             params["tags"] = tags
-        raw = await self._get_json(POSTS_PATH, params)
-        if isinstance(raw, dict):
-            raw = raw.get("posts") or raw.get("result") or []
-        if not isinstance(raw, list):
-            raw = []
-        galleries = [self._post_to_gallery(p) for p in raw if isinstance(p, dict)]
+        cache_key = f"q={query}|p={page}|s={sort}|m={match}"
+        cached = self._search_cache.get(cache_key)
+        if cached is not None and time.monotonic() - cached[0] <= RULE34_SEARCH_CACHE_TTL:
+            self._search_cache.move_to_end(cache_key)
+            return cached[1]
+        if match == "or" and tags:
+            result = await self._search_or(tags, page=page)
+        else:
+            if tags:
+                params["tags"] = tags
+            raw = await self._get_json(POSTS_PATH, params)
+            if isinstance(raw, dict):
+                raw = raw.get("posts") or raw.get("result") or []
+            if not isinstance(raw, list):
+                raw = []
+            galleries = [self._post_to_gallery(p) for p in raw if isinstance(p, dict)]
+            result = SearchResult(
+                galleries=galleries,
+                page=max(1, int(page)),
+                total_pages=0,
+                per_page=PAGE_SIZE,
+            )
+        self._search_cache[cache_key] = (time.monotonic(), result)
+        while len(self._search_cache) > RULE34_SEARCH_CACHE_MAXSIZE:
+            self._search_cache.popitem(last=False)
+        return result
+
+    async def _search_or(self, tags: str, page: int = 1) -> SearchResult:
+        """OR-mode search: union the result sets of the individual tags."""
+        merged: dict[int, Gallery] = {}
+        found_any = False
+        for tag in [t for t in (tags or "").split() if t and not t.startswith("-")]:
+            found_any = True
+            sub = await self.search(tag, page=page)
+            for g in sub.galleries:
+                merged[g.id] = g
+        if not found_any:
+            params: dict[str, Any] = {
+                "json": 1,
+                "limit": PAGE_SIZE,
+                "pid": max(1, int(page)),
+                "fields": "tag_info",
+            }
+            raw = await self._get_json(POSTS_PATH, params)
+            if isinstance(raw, dict):
+                raw = raw.get("posts") or raw.get("result") or []
+            galleries = [self._post_to_gallery(p) for p in raw if isinstance(p, dict)] if isinstance(raw, list) else []
+            return SearchResult(
+                galleries=galleries,
+                page=max(1, int(page)),
+                total_pages=0,
+                per_page=PAGE_SIZE,
+            )
+        found = sorted(merged.values(), key=lambda g: g.upload_date, reverse=True)
         return SearchResult(
-            galleries=galleries,
+            galleries=found,
             page=max(1, int(page)),
             total_pages=0,
-            per_page=PAGE_SIZE,
+            per_page=max(1, len(found)),
         )
 
     async def post(self, post_id: int) -> Gallery:

@@ -10,6 +10,16 @@ const SORTS = [
   ["popular-week", "this week"],
 ];
 
+const MATCH_KEY = "nhc_browse_match";
+
+function readStoredMatch() {
+  try {
+    return localStorage.getItem(MATCH_KEY) === "or" ? "or" : "and";
+  } catch {
+    return "and";
+  }
+}
+
 // --- tag query helpers (Big Pickle Phase 1) --------------------------------
 // Tag names may contain spaces ("full color"), so tokens are quoted and the
 // query is split on whitespace *outside* quotes.
@@ -111,6 +121,7 @@ export default function Browse() {
   const initial = useMemo(initialBrowseState, []);
   const [query, setQuery] = useState(initial.query);
   const [sort, setSort] = useState("date");
+  const [match, setMatch] = useState(readStoredMatch);
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -142,7 +153,7 @@ export default function Browse() {
     async (p, replace) => {
       setLoading(true);
       try {
-        const res = await api.get("/api/search", { q: query, page: p, sort });
+        const res = await api.get("/api/search", { q: query, page: p, sort, match });
         setTotalPages(res.total_pages || 1);
         setItems((prev) => (replace ? res.results : [...prev, ...res.results]));
       } catch (e) {
@@ -151,7 +162,7 @@ export default function Browse() {
         setLoading(false);
       }
     },
-    [query, sort]
+    [query, sort, match]
   );
 
   // mount-only initial load (deep link / remembered tags); all other searches
@@ -168,6 +179,15 @@ export default function Browse() {
     setPage(1);
     load(1, true);
   }, [load, query]);
+
+  // remember the tag match mode (and → all tags must match, or → any tag)
+  useEffect(() => {
+    try {
+      localStorage.setItem(MATCH_KEY, match);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [match]);
 
   const setQueryTokens = (tokens) => setQuery(tokens.filter(Boolean).join(" "));
 
@@ -239,6 +259,15 @@ export default function Browse() {
               sort: {l}
             </option>
           ))}
+        </select>
+        <select
+          value={match}
+          onChange={(e) => setMatch(e.target.value)}
+          className="w-32"
+          title="how multiple tags combine: all = every tag must match, any = at least one"
+        >
+          <option value="and">match: all</option>
+          <option value="or">match: any</option>
         </select>
         <button className="btn btn-primary text-sm" onClick={submit}>
           search

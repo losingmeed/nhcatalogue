@@ -106,6 +106,15 @@ class TestSearch:
         assert body["results"][0]["title_pretty"] == "Mi Result"
         assert body["results"][0]["in_catalogue"] is False
 
+    def test_search_unknown_match_falls_back_to_and(self, server):
+        # an unrecognized match mode degrades to the default AND behaviour
+        tc, app, _ = server
+        r = tc.get("/api/search", params={"q": "mi", "match": "bogus"}, headers=H(app))
+        assert r.status_code == 200
+        body = r.json()
+        assert body["page"] == 1
+        assert body["results"][0]["id"] == 101
+
     def test_gallery_detail_live(self, server):
         tc, app, _ = server
         r = tc.get("/api/galleries/101", headers=H(app))
