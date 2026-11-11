@@ -42,10 +42,13 @@ def _print_gallery(g: dict) -> None:
 
 
 async def cmd_search(app: App, args) -> int:
+    source = getattr(args, "source", "nhentai") or "nhentai"
     async with app.client as client:
         app.client._client = client  # keep handle for close
         try:
-            result = await client.search(args.query, page=args.page, sort=args.sort)
+            result = await app.source_client(source).search(
+                args.query, page=args.page, sort=args.sort
+            )
         except Exception as e:
             print(f"search failed: {e}", file=sys.stderr)
             return 1
@@ -201,6 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--sort", default="", help="date|popular|popular-month")
     sp.add_argument("--limit", type=int, default=25)
     sp.add_argument("--tags", type=int, default=6, help="tags shown per gallery")
+    sp.add_argument(
+        "--source", default="nhentai", help="which source to search (nhentai|rule34)"
+    )
 
     sp = sub.add_parser("add", help="add galleries to the catalogue")
     sp.add_argument("ids", nargs="+")
