@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=nhcatalogue
+GenericName=NH Catalogue / Browser / Downloader
+Comment=Local catalogue, browser and downloader for nhentai
+Exec=nhcatalogue.sh
+Icon=nhcatalogue
+Type=Application
+Categories=Network;FileTransfer;Viewer;
+Terminal=false
+StartupNotify=true
+Keywords=nhentai;catalogue;downloader;gallery;
+# Place this file next to the extracted nhcatalogue/ folder (and the
+# nhcatalogue.sh launcher). To show the app icon, set Icon= to the absolute
+# path of assets/nhcatalogue.svg after extraction, e.g.:
+#   Icon=/home/friend/nhcatalogue/assets/nhcatalogue.svg

@@ -17,6 +17,8 @@ UI_DIST = Path("src/nhcatalogue/ui/dist")
 
 datas = [
     ("src/nhcatalogue/db/migrations", "nhcatalogue/db/migrations"),
+    ("assets/nhcatalogue.svg", "assets"),
+    ("nhcatalogue.desktop", "."),
 ]
 if UI_DIST.exists():
     datas.append((str(UI_DIST), "nhcatalogue/ui/dist"))
@@ -62,7 +64,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=True,  # keep a console for logs on Linux; set False for clean desktop use
-    icon=None,  # add an .ico/.icns/png path here when available
+    icon="assets/nhcatalogue.svg",
 )
 coll = COLLECT(
     exe,

@@ -118,7 +118,7 @@ async def cmd_download(app: App, args) -> int:
 
 
 async def cmd_import(app: App, args) -> int:
-    from .downloader import import_library
+    from nhcatalogue.downloader import import_library
 
     root = Path(args.path).expanduser()
     ids = await import_library(app.db, root, client=app.client, fetch_missing_detail=args.fetch)
@@ -162,7 +162,8 @@ async def cmd_status(app: App, args) -> int:
     print(f"  cf_clearance {'set (' + str(len(s.cf_clearance)) + ' chars)' if s.cf_clearance else '(none)'}")
     print(f"  flaresolverr {s.flaresolverr_url or '(none)'}")
     print(f"  rate limit   {s.rate_limit_rps} rps +-{s.rate_limit_jitter} jitter")
-    from .client import HAS_CURL_CFFI
+
+    from nhcatalogue.client import HAS_CURL_CFFI
 
     print(f"  transport    {'curl_cffi (chrome impersonation)' if HAS_CURL_CFFI else 'httpx (fallback)'}")
     n = await app.db.count_galleries()
