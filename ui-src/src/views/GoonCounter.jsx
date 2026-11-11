@@ -4,6 +4,7 @@ import { DIALOGUE_POOLS, PERSONALITIES, pickDialogue } from "../goon/dialogues.j
 const COOLDOWN_MS = 60_000; // one press per minute
 const COUNT_KEY = "nhc_goon_count";
 const LAST_KEY = "nhc_goon_last";
+const PERSONALITY_KEY = "nhc_goon_personality";
 
 function readStoredInt(key, fallback) {
   try {
@@ -15,20 +16,39 @@ function readStoredInt(key, fallback) {
   }
 }
 
+function readStoredString(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw !== null && PERSONALITIES.includes(raw) ? raw : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 // Goon counter + automated praise chatbot. The counter button can be pressed
 // once per COOLDOWN_MS; every press delivers a fresh premade praise dialogue
-// from a random personality.
+// from your chosen personality.
 export default function GoonCounter() {
   const [count, setCount] = useState(() => readStoredInt(COUNT_KEY, 0));
   const [lastPress, setLastPress] = useState(() => readStoredInt(LAST_KEY, 0));
   const [message, setMessage] = useState("");
-  const [personality, setPersonality] = useState("");
+  const [personality, setPersonality] = useState(() =>
+    readStoredString(PERSONALITY_KEY, PERSONALITIES[0])
+  );
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PERSONALITY_KEY, personality);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [personality]);
 
   const cooldownLeftMs = Math.max(0, COOLDOWN_MS - (now - lastPress));
   const ready = cooldownLeftMs <= 0;
@@ -46,9 +66,7 @@ export default function GoonCounter() {
     } catch {
       /* storage unavailable — keep in-memory only */
     }
-    const p = PERSONALITIES[Math.floor(Math.random() * PERSONALITIES.length)];
-    setPersonality(p);
-    setMessage(pickDialogue(p));
+    setMessage(pickDialogue(personality));
   };
 
   return (
@@ -65,6 +83,22 @@ export default function GoonCounter() {
         <div className="mt-2 text-[10px] uppercase tracking-widest text-slate-500">
           goons delivered
         </div>
+        <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-widest text-slate-500">
+          <label className="flex items-center gap-1 cursor-pointer select-none">
+            personality{" "}
+            <select
+              value={personality}
+              onChange={(e) => setPersonality(e.target.value)}
+              className="bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+            >
+              {PERSONALITIES.map((p) => (
+                <option key={p} value={p}>
+                  {p.replace(/_/g, " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button
           className="btn btn-danger mt-6 text-lg"
           onClick={press}
@@ -79,8 +113,13 @@ export default function GoonCounter() {
 
       {message && (
         <div className="card mt-6 p-5">
-          <div className="text-[10px] uppercase tracking-widest text-slate-500">
-            {personality} says:
+          <div className="flex items-center gap-2 mb-2">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500">
+              {personality.replace(/_/g, " ")} says:
+            </div>
+            <span className="text-[10px] text-indigo-400 font-medium">
+              voice: {personality.replace(/_/g, " ")}
+            </span>
           </div>
           <p className="mt-3 text-sm leading-6 text-slate-200">{message}</p>
         </div>

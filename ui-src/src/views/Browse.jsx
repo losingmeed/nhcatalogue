@@ -128,6 +128,8 @@ export default function Browse() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const sentinel = useRef(null);
+  const debounceRef = useRef(null);
+  const lastSubmitted = useRef(initial.query);
 
   const [selectedTags, setSelectedTags] = useState(initial.selected);
   const [blacklistTags, setBlacklistTags] = useState(initial.blacklisted);
@@ -172,11 +174,12 @@ export default function Browse() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const submit = useCallback(() => {
-    const tags = tagsFromQuery(query);
+  const submit = useCallback((q = query) => {
+    const tags = tagsFromQuery(q);
     setSelectedTags(tags.selected);
     setBlacklistTags(tags.blacklisted);
     setPage(1);
+    lastSubmitted.current = q;
     load(1, true);
   }, [load, query]);
 
@@ -188,6 +191,18 @@ export default function Browse() {
       /* storage unavailable */
     }
   }, [match]);
+
+  // debounced auto-search on query changes (avoids hammering the API)
+  useEffect(() => {
+    if (query === lastSubmitted.current) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      if (query !== lastSubmitted.current) submit(query);
+    }, 700);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, submit]);
 
   const setQueryTokens = (tokens) => setQuery(tokens.filter(Boolean).join(" "));
 
@@ -260,28 +275,44 @@ export default function Browse() {
             </option>
           ))}
         </select>
-        <select
-          value={match}
-          onChange={(e) => setMatch(e.target.value)}
-          className="w-32"
-          title="how multiple tags combine: all = every tag must match, any = at least one"
-        >
-          <option value="and">match: all</option>
-          <option value="or">match: any</option>
-        </select>
-        <button className="btn btn-primary text-sm" onClick={submit}>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">tags</span>
+          <select
+            value={match}
+            onChange={(e) => setMatch(e.target.value)}
+            className="w-32"
+            title="AND = every tag must match · OR = any tag matches"
+          >
+            <option value="and">match: all (AND)</option>
+            <option value="or">match: any (OR)</option>
+          </select>
+        </div>
+        <button className="btn btn-primary text-sm" onClick={() => submit()}>
           search
         </button>
       </div>
 
       {query && (
-        <div className="mb-3 text-xs text-slate-500">
-          live search:
-          {splitTokens(query).map((tok, i) => (
-            <span key={i} className="ml-1 rounded bg-slate-800 px-1.5 py-0.5">
-              {tok}
-            </span>
-          ))}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+          <span className="mr-1">query:</span>
+          {splitTokens(query).map((tok, i) => {
+            const isNeg = tok.startsWith("-");
+            return (
+              <span
+                key={i}
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${
+                  isNeg
+                    ? "border-rose-700/50 bg-rose-900/30 text-rose-300"
+                    : "border-indigo-700/40 bg-indigo-900/20 text-indigo-200"
+                }`}
+              >
+                {tok}
+              </span>
+            );
+          })}
+          <span className="ml-2 text-[10px] text-slate-600">
+            ({match === "and" ? "all tags must match" : "any tag matches"})
+          </span>
         </div>
       )}
 

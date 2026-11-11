@@ -8,6 +8,7 @@ export default function Rule34Viewer({ items, index, onIndexChange, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [warn, setWarn] = useState(null);
+  const [videoError, setVideoError] = useState(false);
   const [queueing, setQueueing] = useState(false);
 
   const current = items[index];
@@ -124,8 +125,12 @@ export default function Rule34Viewer({ items, index, onIndexChange, onClose }) {
               <video
                 key={mediaSrc}
                 src={mediaSrc}
+                crossOrigin="anonymous"
+                preload="auto"
                 controls
                 playsInline
+                muted
+                onError={() => setVideoError(true)}
                 className="max-h-[75vh] max-w-full rounded bg-black"
               />
             ) : (
@@ -135,6 +140,23 @@ export default function Rule34Viewer({ items, index, onIndexChange, onClose }) {
                 alt={post.title || ""}
                 className="max-h-[75vh] max-w-full rounded object-contain"
               />
+            )}
+            {videoError && (
+              <div className="flex flex-col items-center justify-center p-6 text-center">
+                <div className="mb-2 text-rose-400">⚠️</div>
+                <div className="text-sm text-rose-300 mb-4">
+                  Couldn't load this video — try again or check your connection.
+                </div>
+                <button
+                  className="btn btn-ghost text-xs"
+                  onClick={() => {
+                    setVideoError(false);
+                    load();
+                  }}
+                >
+                  retry
+                </button>
+              </div>
             )}
             {pages.length > 1 && (
               <div className="flex items-center gap-2 text-xs text-slate-400">
