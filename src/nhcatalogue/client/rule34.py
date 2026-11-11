@@ -38,7 +38,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from ..config import Settings
 from .errors import BlockedError, NotFoundError
@@ -284,6 +284,30 @@ def normalize_tag_query(query: str) -> str:
     return " ".join(tokens)
 
 
+def split_credentials(api_key: str, user_id: str) -> tuple[str, str]:
+    """Extract the account id and API key from the stored settings.
+
+    Rule 34 shows the credentials as a single blob in the account page —
+    ``&api_key=<key>&user_id=<id>`` — and it is natural to paste that whole
+    thing into the "api key" field. The dapi, however, compares the api_key
+    parameter verbatim, so the blob has to be unpacked before it is sent.
+
+    Returns ``(user_id, api_key)``; both are empty when nothing is set.
+    """
+    key = (api_key or "").strip()
+    uid = (user_id or "").strip()
+    if "api_key=" in key:
+        parsed = parse_qs(key.lstrip("&"))
+        values = parsed.get("api_key") or []
+        if values:
+            key = values[0].strip()
+        if not uid:
+            ids = parsed.get("user_id") or []
+            if ids:
+                uid = ids[0].strip()
+    return uid, key
+
+
 class Rule34Client:
     def __init__(self, settings: Settings, transport: Transport):
         self.settings = settings
@@ -331,17 +355,23 @@ class Rule34Client:
         return (self.settings.rule34_api_host or DEFAULT_API_HOST).strip() or DEFAULT_API_HOST
 
     @property
+    def credentials(self) -> tuple[str, str]:
+        """The account id and API key, unpacked from whatever was pasted."""
+        return split_credentials(
+            self.settings.rule34_api_key, self.settings.rule34_user_id
+        )
+
+    @property
     def configured(self) -> bool:
-        return bool(self.settings.rule34_user_id and self.settings.rule34_api_key)
+        uid, key = self.credentials
+        return bool(uid and key)
 
     def _auth_params(self) -> dict[str, str]:
         """Credentials as query parameters — the only form the dapi accepts."""
-        if not self.configured:
+        uid, key = self.credentials
+        if not (uid and key):
             return {}
-        return {
-            "api_key": self.settings.rule34_api_key,
-            "user_id": str(self.settings.rule34_user_id),
-        }
+        return {"api_key": key, "user_id": uid}
 
     def _headers(self) -> dict[str, str]:
         """Headers for API requests (the credentials are in the query string)."""
@@ -357,7 +387,8 @@ class Rule34Client:
             # The dapi reads the credentials from the query string; the
             # Authorization header is kept as a belt-and-braces fallback for
             # deployments that proxy the API behind a Basic-auth gateway.
-            raw = f"{self.settings.rule34_user_id}:{self.settings.rule34_api_key}".encode()
+            uid, key = self.credentials
+            raw = f"{uid}:{key}".encode()
             headers["Authorization"] = "Basic " + base64.b64encode(raw).decode()
         return headers
 

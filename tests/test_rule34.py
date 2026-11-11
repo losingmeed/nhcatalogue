@@ -308,6 +308,39 @@ class TestRule34Client:
         assert client.api_host == "api.rule34.xxx"
         assert client.domain == "rule34.xxx"
 
+    def test_pasted_credential_blob_is_unpacked(self):
+        """The site shows '&api_key=...&user_id=...'; pasting it must work.
+
+        The dapi compares the api_key parameter verbatim, so the blob has
+        to be unpacked before it is sent — otherwise every request is
+        rejected with "Missing authentication".
+        """
+        from nhcatalogue.client.rule34 import Rule34Client, split_credentials
+        from nhcatalogue.config import Settings
+
+        key = "c7ac7975aaae154720eeb11ccd77ac6ff9c17e9e36668aaa8b1906383ad8d761a"
+        blob = f"&api_key={key}&user_id=7040482"
+
+        # the blob alone carries both values
+        assert split_credentials(blob, "") == ("7040482", key)
+        # a blob pasted alongside a user id keeps the id and unpacks the key
+        assert split_credentials(blob, "7040482") == ("7040482", key)
+
+        s = Settings()
+        s.rule34_user_id = "7040482"
+        s.rule34_api_key = blob
+        client = Rule34Client(s, MockTransport())
+        assert client.configured is True
+        assert client._auth_params() == {"api_key": key, "user_id": "7040482"}
+        # the raw blob must never reach the wire
+        assert blob not in client._build_url("/x", {})
+
+    def test_plain_credentials_are_untouched(self):
+        from nhcatalogue.client.rule34 import split_credentials
+
+        assert split_credentials("deadbeef", "1234") == ("1234", "deadbeef")
+        assert split_credentials("", "") == ("", "")
+
     def test_plain_string_tags_parsed(self):
         from nhcatalogue.client.rule34 import Rule34Client
         from nhcatalogue.config import Settings
