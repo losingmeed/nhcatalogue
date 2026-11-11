@@ -59,7 +59,8 @@ class Settings:
     cf_clearance: str = ""  # pasted cf_clearance cookie value
     cf_user_agent: str = ""  # the exact UA the clearance was issued for
     flaresolverr_url: str = ""  # e.g. http://127.0.0.1:8191 (optional)
-    rule34_domain: str = "rule34.xxx"  # rule 34 host
+    rule34_domain: str = "rule34.xxx"  # rule 34 site host
+    rule34_api_host: str = "api.rule34.xxx"  # rule 34 API host (separate)
     rule34_user_id: str = ""  # rule 34 account id (required by the API)
     rule34_api_key: str = ""  # rule 34 API key (required by the API)
 

@@ -3,10 +3,12 @@
 Normalises posts into the shared ``Gallery``/``Page``/``Tag`` models so the
 catalogue, downloader, page cache and reader work without modification.
 
-The site sits behind a JavaScript CAPTCHA and its API requires an account
-key, so requests go through the app's existing transport chain (TLS
-impersonation, proxy, FlareSolverr) and carry HTTP Basic auth when the user
-has configured ``rule34_user_id`` / ``rule34_api_key``.
+Two hosts are involved: the site (``rule34.xxx``) and the API
+(``api.rule34.xxx``). The API needs the account id and API key from the
+site's *Account → Options → API Access Credentials* field, and they travel
+as the ``user_id`` / ``api_key`` query parameters on every request. Requests
+go through the app's existing transport chain, so TLS impersonation clears
+the site's JavaScript CAPTCHA.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import base64
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 from ..config import Settings
 from .errors import BlockedError, NotFoundError
@@ -27,14 +30,28 @@ log = logging.getLogger("nhcatalogue.rule34")
 RULE34_ID_OFFSET = 1_000_000_000
 
 DEFAULT_DOMAIN = "rule34.xxx"
-API_HOST = "api.rule34.xxx"
+DEFAULT_API_HOST = "api.rule34.xxx"
 
-POSTS_PATH = "/index.php?page=dapi&s=post&q=index&json=1"
-TAGS_PATH = "/index.php?page=dapi&s=tag&q=index&json=1"
+POSTS_PATH = "/index.php?page=dapi&s=post&q=index"
+TAGS_PATH = "/index.php?page=dapi&s=tag&q=index"
 AUTOCOMPLETE_PATH = "/autocomplete.php"
 
 VIDEO_EXTS = {".mp4", ".webm", ".m4v", ".mov", ".swf", ".ogv"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+# namespaces rule34 uses when typed tags are requested
+KNOWN_TAG_TYPES = {
+    "artist",
+    "copyright",
+    "character",
+    "series",
+    "general",
+    "other",
+    "metadata",
+    "system",
+    "meta",
+    "tag",
+}
 
 PAGE_SIZE = 40
 
@@ -62,11 +79,44 @@ def _is_video(ext: str) -> bool:
     return f".{_clean_ext(ext)}" in VIDEO_EXTS
 
 
+def _ext_from_url(url: str) -> str:
+    name = (url or "").split("?")[0].rsplit("/", 1)[-1]
+    if "." not in name:
+        return ""
+    return name.rsplit(".", 1)[-1].lower()
+
+
+def cdn_url(url: str) -> str:
+    """Rule 34 serves images from a ``wimg.`` host; videos from the site host."""
+    if not url.startswith("http"):
+        return url
+    scheme, _, rest = url.partition("://")
+    host, _, path = rest.partition("/")
+    if host.startswith("wimg.") or host.startswith("api."):
+        return url
+    # "rule34.xxx" → "wimg.xxx" (the site's own host convention)
+    parts = host.split(".")
+    if len(parts) >= 2:
+        host = "wimg." + ".".join(parts[1:])
+    else:
+        host = "wimg." + host
+    return f"{scheme}://{host}/{path}"
+
+
 def _parse_tags(raw: Any) -> list[Tag]:
     tags: list[Tag] = []
     if isinstance(raw, str):
-        for name in raw.split():
-            tags.append(Tag(id=0, name=name, type="general", count=0))
+        # the api returns a space-separated list; names may carry a namespace
+        # prefix ("artist:someartist") when typed tags are requested
+        for token in raw.split():
+            name = token
+            type_ = "general"
+            if ":" in token:
+                prefix, _, rest = token.partition(":")
+                if prefix.lower() in KNOWN_TAG_TYPES and rest:
+                    type_ = normalize_type(prefix)
+                    name = rest
+            tags.append(Tag(id=0, name=name, type=type_, count=0))
         return tags
     if isinstance(raw, dict):
         for type_name, names in raw.items():
@@ -96,11 +146,17 @@ def _parse_tags(raw: Any) -> list[Tag]:
 
 
 def _created_timestamp(value: str) -> int:
+    """The API uses ``Wed Oct 22 09:14:33 +0000 2025``; be tolerant of ISO too."""
     if not value:
         return 0
-    text = str(value).strip().replace("Z", "+00:00")
+    text = str(value).strip()
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
+        try:
+            return int(datetime.strptime(text, fmt).timestamp())
+        except ValueError:
+            continue
     try:
-        return int(datetime.fromisoformat(text).timestamp())
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
     except ValueError:
         return 0
 
@@ -124,17 +180,25 @@ class Rule34Client:
 
     @property
     def domain(self) -> str:
+        """The site host (referer, media)."""
         return (self.settings.rule34_domain or DEFAULT_DOMAIN).strip() or DEFAULT_DOMAIN
+
+    @property
+    def api_host(self) -> str:
+        """The API host — separate from the site host."""
+        return (self.settings.rule34_api_host or DEFAULT_API_HOST).strip() or DEFAULT_API_HOST
 
     @property
     def configured(self) -> bool:
         return bool(self.settings.rule34_user_id and self.settings.rule34_api_key)
 
-    def _auth_header(self) -> dict[str, str]:
+    def _auth_params(self) -> dict[str, str]:
         if not self.configured:
             return {}
-        raw = f"{self.settings.rule34_user_id}:{self.settings.rule34_api_key}".encode()
-        return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+        return {
+            "api_key": self.settings.rule34_api_key,
+            "user_id": str(self.settings.rule34_user_id),
+        }
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -145,20 +209,41 @@ class Rule34Client:
             "Accept": "application/json, text/plain, */*",
             "Referer": f"https://{self.domain}/",
         }
-        headers.update(self._auth_header())
+        if self.configured:
+            raw = f"{self.settings.rule34_user_id}:{self.settings.rule34_api_key}".encode()
+            headers["Authorization"] = "Basic " + base64.b64encode(raw).decode()
+            headers["X-Api-Key"] = self.settings.rule34_api_key
+            headers["X-User-Id"] = str(self.settings.rule34_user_id)
         return headers
 
-    async def _get_json(self, path: str) -> Any:
-        url = f"https://{self.domain}{path}"
-        host = self.domain
+    def _cookies(self) -> dict[str, str]:
+        if not self.configured:
+            return {}
+        return {
+            "api_key": self.settings.rule34_api_key,
+            "user_id": str(self.settings.rule34_user_id),
+        }
+
+    async def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        query = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+        query.update(self._auth_params())
+        url = f"https://{self.api_host}{path}"
+        if query:
+            url += ("&" if "?" in url else "?") + urlencode(query)
+        host = self.api_host
         await self.limiter.acquire(host)
         try:
-            resp = await self.transport.request("GET", url, headers=self._headers())
+            resp = await self.transport.request(
+                "GET",
+                url,
+                headers=self._headers(),
+                cookies=self._cookies(),
+            )
         finally:
             self.limiter.release(host)
         if resp.status == 404:
             raise NotFoundError(path)
-        if resp.status == 401 or resp.status == 403:
+        if resp.status in (401, 403):
             raise BlockedError(
                 "rule34 rejected the request — set rule34_user_id and rule34_api_key "
                 "in Settings (get a key from "
@@ -167,64 +252,75 @@ class Rule34Client:
         if resp.status >= 500:
             raise BlockedError(f"rule34: HTTP {resp.status}")
         try:
-            return resp.json()
+            payload = resp.json()
         except ValueError as e:
-            body = resp.content[:120].decode("utf-8", "replace")
+            body = resp.content[:200].decode("utf-8", "replace")
             if "captcha" in body.lower():
                 raise BlockedError(
                     "rule34 served a CAPTCHA — enable a proxy or FlareSolverr in Settings"
                 ) from e
             raise BlockedError(f"rule34: non-JSON response ({body})") from e
+        # the api answers errors with a bare string (json mode) or {"error": ...}
+        if isinstance(payload, str):
+            raise BlockedError(f"rule34: {payload}")
+        if isinstance(payload, dict) and payload.get("error"):
+            raise BlockedError(f"rule34: {payload['error']}")
+        return payload
 
     def _post_to_gallery(self, raw: dict[str, Any]) -> Gallery:
         post_id = int(raw.get("id", 0) or 0)
+
         file_info = raw.get("file") or {}
-        preview = raw.get("preview") or {}
-        sample = raw.get("sample") or {}
-
-        ext = _clean_ext(str(file_info.get("ext") or "jpg"))
+        file_url = str(raw.get("file_url") or file_info.get("url") or "")
+        ext = _clean_ext(str(file_info.get("ext") or _ext_from_url(file_url) or "jpg"))
         kind = "video" if _is_video(ext) else "image"
-        size = int(file_info.get("size") or 0)
-        width = int(file_info.get("width") or 0)
-        height = int(file_info.get("height") or 0)
+        size = int(raw.get("file_size") or file_info.get("size") or 0)
+        width = int(raw.get("width") or file_info.get("width") or 0)
+        height = int(raw.get("height") or file_info.get("height") or 0)
 
-        file_url = str(file_info.get("url") or "")
         pages: list[Page] = []
         if file_url:
             pages.append(
-                Page(number=1, ext=ext, width=width, height=height, path=file_url)
+                Page(
+                    number=1,
+                    ext=ext,
+                    width=width,
+                    height=height,
+                    path=cdn_url(file_url),
+                )
             )
 
         siblings = raw.get("posts") or []
-        for offset, sibling in enumerate(siblings):
+        for sibling in siblings:
             if not isinstance(sibling, dict):
                 continue
             sib_file = sibling.get("file") or {}
-            sib_url = str(sib_file.get("url") or "")
+            sib_url = str(sibling.get("file_url") or sib_file.get("url") or "")
             if not sib_url:
                 continue
-            sib_ext = _clean_ext(str(sib_file.get("ext") or ext))
+            sib_ext = _clean_ext(str(sib_file.get("ext") or _ext_from_url(sib_url) or ext))
             pages.append(
                 Page(
                     number=len(pages) + 1,
                     ext=sib_ext,
-                    width=int(sib_file.get("width") or 0),
-                    height=int(sib_file.get("height") or 0),
-                    path=sib_url,
+                    width=int(sibling.get("width") or sib_file.get("width") or 0),
+                    height=int(sibling.get("height") or sib_file.get("height") or 0),
+                    path=cdn_url(sib_url),
                 )
             )
-            if len(pages) >= 1 and offset == 0 and len(siblings) > 1:
-                continue
 
-        cover_url = str(preview.get("url") or sample.get("url") or "")
+        cover_url = str(raw.get("preview_url") or raw.get("sample_url") or "")
+        if not cover_url:
+            preview = raw.get("preview") or {}
+            cover_url = str(preview.get("url") or "")
         if not cover_url and file_url and kind == "image":
             cover_url = file_url
+        if cover_url:
+            cover_url = cdn_url(cover_url)
 
         tags = _parse_tags(raw.get("tags"))
-        title = f"post {post_id}"
-        source_field = str(raw.get("source") or "").strip()
-        if source_field:
-            title = source_field
+        title = str(raw.get("source") or "").strip() or f"post {post_id}"
+        creator = raw.get("creator_name") or raw.get("author") or raw.get("creator_id") or ""
 
         return Gallery(
             id=encode_id(post_id),
@@ -241,7 +337,7 @@ class Rule34Client:
             tags=tags,
             num_pages=len(pages) or 1,
             upload_date=_created_timestamp(str(raw.get("created_at") or "")),
-            scanlator=str(raw.get("creator_id") or ""),
+            scanlator=str(creator),
             source="rule34",
             media_kind=kind,
             file_size=size,
@@ -250,13 +346,18 @@ class Rule34Client:
     async def search(
         self, query: str = "", page: int = 1, sort: str = ""
     ) -> SearchResult:
-        params = [f"limit={PAGE_SIZE}", f"pid={max(1, int(page))}", "fields=tag_info"]
+        params: dict[str, Any] = {
+            "json": 1,
+            "limit": PAGE_SIZE,
+            "pid": max(1, int(page)),
+            "fields": "tag_info",
+        }
         tags = (query or "").strip()
         if tags:
-            params.append(f"tags={_quote(tags)}")
-        raw = await self._get_json(f"{POSTS_PATH}&{'&'.join(params)}")
+            params["tags"] = tags
+        raw = await self._get_json(POSTS_PATH, params)
         if isinstance(raw, dict):
-            raw = raw.get("posts") or []
+            raw = raw.get("posts") or raw.get("result") or []
         if not isinstance(raw, list):
             raw = []
         galleries = [self._post_to_gallery(p) for p in raw if isinstance(p, dict)]
@@ -268,9 +369,12 @@ class Rule34Client:
         )
 
     async def post(self, post_id: int) -> Gallery:
-        raw = await self._get_json(f"{POSTS_PATH}&id={int(post_id)}")
+        raw = await self._get_json(POSTS_PATH, {"json": 1, "id": int(post_id)})
         if isinstance(raw, list):
             raw = raw[0] if raw else {}
+        if isinstance(raw, dict) and "posts" in raw:
+            posts = raw.get("posts") or []
+            raw = posts[0] if posts else {}
         if not isinstance(raw, dict) or not raw.get("id"):
             raise NotFoundError(f"rule34 post {post_id}")
         return self._post_to_gallery(raw)
@@ -293,7 +397,9 @@ class Rule34Client:
         return ""
 
     async def fetch_media(self, url: str) -> tuple[bytes, str]:
-        resp = await self.transport.request("GET", url, headers=self._headers())
+        resp = await self.transport.request(
+            "GET", url, headers=self._headers(), cookies=self._cookies()
+        )
         if resp.status != 200 or not resp.content:
             raise BlockedError(f"rule34: HTTP {resp.status} for media")
         ctype = str(resp.headers.get("content-type") or "").split(";")[0].strip().lower()
@@ -311,14 +417,14 @@ class Rule34Client:
     ) -> list[Tag]:
         q = (query or "").strip()
         if q:
-            raw = await self._get_json(f"{AUTOCOMPLETE_PATH}?q={_quote(q)}")
+            raw = await self._get_json(AUTOCOMPLETE_PATH, {"q": q})
             names = raw if isinstance(raw, list) else []
             return [
                 Tag(id=0, name=str(n).strip(), type="general", count=0)
                 for n in names
                 if str(n).strip()
             ][:limit]
-        raw = await self._get_json(f"{TAGS_PATH}&limit={max(1, min(int(limit), 100))}")
+        raw = await self._get_json(TAGS_PATH, {"json": 1, "limit": max(1, min(int(limit), 100))})
         items = raw if isinstance(raw, list) else []
         out: list[Tag] = []
         for item in items:
@@ -336,9 +442,3 @@ class Rule34Client:
                 )
             )
         return out[:limit]
-
-
-def _quote(value: str) -> str:
-    from urllib.parse import quote
-
-    return quote(value, safe="")

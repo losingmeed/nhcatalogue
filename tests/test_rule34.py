@@ -31,42 +31,60 @@ def make_post_raw(
     url: str | None = None,
     tags: dict | str | None = None,
 ) -> dict:
+    """The real dapi post shape: flat fields, values as strings."""
     if tags is None:
-        tags = {"artist": ["someartist"], "general": ["cat", "solo"]}
+        tags = "artist:someartist cat solo"
     return {
         "id": post_id,
-        "file": {
-            "url": url or f"https://rule34.xxx/image/{post_id}/file{ext}",
-            "ext": ext,
-            "size": size,
-            "width": 1280,
-            "height": 1808,
-        },
-        "preview": {
-            "url": f"https://rule34.xxx/image/{post_id}/thumb.jpg",
-            "size": 2000,
-            "width": 250,
-            "height": 356,
-        },
         "tags": tags,
+        "file_url": url or f"https://rule34.xxx/image/{post_id}/file{ext}",
+        "created_at": "Wed Oct 22 09:14:33 +0000 2025",
         "rating": "s",
-        "is_nsfw": True,
-        "creator_id": 42,
-        "created_at": "2020-01-01T00:00:00.000Z",
+        "type": "0",
+        "author": "1",
         "status": "active",
+        "parent_id": "0",
+        "has_children": "no",
+        "rating_score": "0",
+        "creator_id": "42",
+        "creator_name": "someone",
+        "sample_url": f"https://rule34.xxx/samples/{post_id}/sample.jpg",
+        "preview_url": f"https://rule34.xxx/preview/{post_id}/prev.jpg",
+        "width": "1280",
+        "height": "1808",
+        "source": "some source",
+        "file_size": str(size),
+        "file_hash": "abcdef",
     }
 
 
-def search_url(query: str = "", page: int = 1) -> str:
-    url = (
-        "https://rule34.xxx/index.php?page=dapi&s=post&q=index&json=1"
-        f"&limit=40&pid={page}&fields=tag_info"
-    )
-    if query:
-        from urllib.parse import quote
+API = "https://api.rule34.xxx"
 
-        url += f"&tags={quote(query, safe='')}"
-    return url
+
+def api_url(path: str, **params) -> str:
+    """Rebuild the exact URL the client builds (params + auth, in order)."""
+    from urllib.parse import urlencode
+
+    query = {k: v for k, v in params.items() if v is not None and v != ""}
+    query["api_key"] = "secret"
+    query["user_id"] = "1234"
+    url = f"{API}{path}"
+    return url + ("&" if "?" in url else "?") + urlencode(query)
+
+
+def search_url(query: str = "", page: int = 1) -> str:
+    return api_url(
+        "/index.php?page=dapi&s=post&q=index",
+        json=1,
+        limit=40,
+        pid=page,
+        fields="tag_info",
+        tags=query or None,
+    )
+
+
+def post_url(post_id: int) -> str:
+    return api_url("/index.php?page=dapi&s=post&q=index", json=1, id=post_id)
 
 
 def H(app: App) -> dict:
@@ -83,24 +101,18 @@ def rule34_server(tmp_path):
     app.settings.rule34_api_key = "secret"
     transport = MockTransport()
     transport.add_json(search_url(), [make_post_raw(555), make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024)])
-    transport.add_json(
-        "https://rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&id=555",
-        make_post_raw(555),
-    )
-    transport.add_json(
-        "https://rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&id=556",
-        make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024),
-    )
+    transport.add_json(post_url(555), make_post_raw(555))
+    transport.add_json(post_url(556), make_post_raw(556, ext=".mp4", size=50 * 1024 * 1024))
     transport.add_json(
         "https://nhentai.net/api/v2/galleries?page=1",
         {"result": [], "num_pages": 1, "per_page": 25, "total": 0},
     )
     transport.add_json(
-        "https://rule34.xxx/index.php?page=dapi&s=tag&q=index&json=1&limit=50",
+        api_url("/index.php?page=dapi&s=tag&q=index", json=1, limit=50),
         [{"id": 1, "name": "cat", "type": "general", "count": 900}],
     )
     transport.add_json(
-        "https://rule34.xxx/autocomplete.php?q=ca", ["cat", "cathedral"]
+        api_url("/autocomplete.php", q="ca"), ["cat", "cathedral"]
     )
     transport.default = TransportResponse(200, {}, b"IMG-BYTES")
     app._client = NhentaiClient(app.settings, transport=transport)
@@ -213,13 +225,18 @@ class TestRule34Client:
         assert g.media_kind == "image"
         assert g.file_size == 123456
         assert g.num_pages == 1
-        assert g.pages[0].path == "https://rule34.xxx/image/555/file.jpg"
+        # images are served from the wimg host
+        assert g.pages[0].path == "https://wimg.xxx/image/555/file.jpg"
         assert g.pages[0].ext == "jpg"
+        assert g.pages[0].width == 1280
+        assert g.pages[0].height == 1808
         names = {t.name for t in g.tags}
         assert names == {"someartist", "cat", "solo"}
         types = {t.name: t.type for t in g.tags}
         assert types["someartist"] == "artist"
         assert types["cat"] == "general"
+        # the rule34 date format is parsed
+        assert g.upload_date > 0
 
     def test_video_detected(self):
         from nhcatalogue.client.rule34 import Rule34Client
@@ -230,6 +247,26 @@ class TestRule34Client:
         assert g.media_kind == "video"
         assert g.pages[0].ext == "mp4"
         assert g.file_size == 50 * 1024 * 1024
+
+    def test_cdn_url_rewrites_image_host(self):
+        from nhcatalogue.client.rule34 import cdn_url
+
+        assert cdn_url("https://rule34.xxx/image/1/a.jpg") == "https://wimg.xxx/image/1/a.jpg"
+        # already rewritten / api hosts are left alone
+        assert cdn_url("https://wimg.xxx/image/1/a.jpg") == "https://wimg.xxx/image/1/a.jpg"
+        assert cdn_url("https://api.rule34.xxx/x") == "https://api.rule34.xxx/x"
+
+    def test_auth_travels_as_query_params(self):
+        from nhcatalogue.client.rule34 import Rule34Client
+        from nhcatalogue.config import Settings
+
+        s = Settings()
+        s.rule34_user_id = "7040482"
+        s.rule34_api_key = "deadbeef"
+        client = Rule34Client(s, MockTransport())
+        assert client._auth_params() == {"api_key": "deadbeef", "user_id": "7040482"}
+        assert client.api_host == "api.rule34.xxx"
+        assert client.domain == "rule34.xxx"
 
     def test_plain_string_tags_parsed(self):
         from nhcatalogue.client.rule34 import Rule34Client
@@ -410,7 +447,7 @@ class TestRule34Download:
             if items and items[0]["status"] in ("done", "error"):
                 break
             time.sleep(0.2)
-        assert any("rule34.xxx/image/555" in u for u in transport.requests)
+        assert any("wimg.xxx/image/555" in u for u in transport.requests)
 
     def test_video_download_uses_mp4_extension(self, rule34_server):
         import time

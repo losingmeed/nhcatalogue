@@ -39,6 +39,7 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         client = app.source_client("rule34")
         return {
             "domain": client.domain,
+            "api_host": client.api_host,
             "configured": client.configured,
             "needs_credentials": not client.configured,
             "message": (
@@ -118,7 +119,9 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         client = app.source_client("rule34")
         headers = client._headers()
         headers["Range"] = range_header if range_header else "bytes=0-"
-        resp = await client.transport.request("GET", url, headers=headers)
+        resp = await client.transport.request(
+            "GET", url, headers=headers, cookies=client._cookies()
+        )
         if resp.status not in (200, 206):
             raise HTTPException(502, f"rule34 media: HTTP {resp.status}")
         ctype = (
@@ -155,7 +158,9 @@ def build_rule34_router(app, guard, media_guard) -> APIRouter:
         if not url:
             raise HTTPException(404, "no cover")
         client = app.source_client("rule34")
-        resp = await client.transport.request("GET", url, headers=client._headers())
+        resp = await client.transport.request(
+            "GET", url, headers=client._headers(), cookies=client._cookies()
+        )
         if resp.status != 200 or not resp.content:
             raise HTTPException(502, f"rule34 cover: HTTP {resp.status}")
         ctype = (

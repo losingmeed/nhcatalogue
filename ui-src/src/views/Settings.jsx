@@ -132,6 +132,7 @@ export default function SettingsView({ settings, reload }) {
         cf_user_agent: s.cf_user_agent || "",
         flaresolverr_url: s.flaresolverr_url || "",
         rule34_domain: s.rule34_domain || "",
+        rule34_api_host: s.rule34_api_host || "",
         rule34_user_id: s.rule34_user_id || "",
         rule34_api_key: s.rule34_api_key || "",
         library_root: s.library_root,
@@ -378,9 +379,15 @@ export default function SettingsView({ settings, reload }) {
         >
           <input
             className="mb-1 w-full"
-            placeholder="rule34 host (default rule34.xxx)"
+            placeholder="rule34 site host (default rule34.xxx)"
             value={s.rule34_domain || ""}
             onChange={(e) => set("rule34_domain", e.target.value)}
+          />
+          <input
+            className="mb-1 w-full"
+            placeholder="rule34 API host (default api.rule34.xxx)"
+            value={s.rule34_api_host || ""}
+            onChange={(e) => set("rule34_api_host", e.target.value)}
           />
           <input
             className="mb-1 w-full"
